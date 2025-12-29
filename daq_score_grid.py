@@ -29,6 +29,7 @@ from tqdm import tqdm
 import map_util.prep_points_from_mrc as prep
 from map_util.dataset_map import MapPointPatchDataset
 from map_util.resize_map import resize_map
+from map_util.unify_map import Unify_Map
 from DAQ.models.resnet import resnet18 as resnet18_multi
 
 
@@ -84,22 +85,30 @@ def check_input_files(map_file, pdb_files=None):
 
 
 def process_map(map_path, output_dir, contour=0.0, stride=2, max_points=500000):
-    """Process map: resize and prepare points"""
+    """Process map: unify, resize and prepare points"""
     map_id = map_path.stem
 
     # Create output directories
+    unified_dir = Path(output_dir) / "unified_map"
     resampled_dir = Path(output_dir) / "resampled_map"
     daqinp_dir = Path(output_dir) / "DAQinp"
+    unified_dir.mkdir(parents=True, exist_ok=True)
     resampled_dir.mkdir(parents=True, exist_ok=True)
     daqinp_dir.mkdir(parents=True, exist_ok=True)
+
+    # Unify map
+    unified_map_path = unified_dir / f"{map_id}_unified.mrc"
+    if not unified_map_path.exists():
+        print(f"Unifying map: {map_path} -> {unified_map_path}")
+        Unify_Map(str(map_path), str(unified_map_path))
 
     # Resample map
     new_map_path = resampled_dir / f"{map_id}_resampled.map"
     if not new_map_path.exists():
-        print(f"Resizing map: {map_path} -> {new_map_path}")
-        resize_map(str(map_path), str(new_map_path))
+        print(f"Resizing map: {unified_map_path} -> {new_map_path}")
+        resize_map(str(unified_map_path), str(new_map_path))
 
-    # Prepare points
+    # Prepare points using the resampled map (1 Å voxel spacing)
     protein_entry = {
         "pdb_id": "NA",
         "emdb_id": map_id,
