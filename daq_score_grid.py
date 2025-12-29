@@ -108,11 +108,11 @@ def process_map(map_path, output_dir, contour=0.0, stride=2, max_points=500000):
         print(f"Resizing map: {unified_map_path} -> {new_map_path}")
         resize_map(str(unified_map_path), str(new_map_path))
 
-    # Prepare points
+    # Prepare points using the resampled map (1 Å voxel spacing)
     protein_entry = {
         "pdb_id": "NA",
         "emdb_id": map_id,
-        "map_path": str(unified_map_path),
+        "map_path": str(new_map_path),
         "cif_path": "NA",
         "contour": float(contour),
     }
