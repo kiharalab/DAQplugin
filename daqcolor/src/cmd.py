@@ -528,7 +528,7 @@ def daqscore_compute(session, map_input, contour, *, output=None, stride=2,
     session.logger.info(f"  Contour: {contour}, Stride: {stride}")
     
     try:
-        points, scores = compute_daq_scores(
+        points, scores, actual_output_path = compute_daq_scores(
             session,
             map_source,
             output_path=output,
@@ -538,22 +538,25 @@ def daqscore_compute(session, map_input, contour, *, output=None, stride=2,
             max_points=max_points,
             model_path=model,
         )
-        
+
+        # Use the actual output path (may differ from requested if fallback was used)
+        saved_path = actual_output_path if actual_output_path else output
+
         session.logger.info(f"DAQ score computation completed!")
         session.logger.info(f"  Points: {points.shape[0]}")
-        session.logger.info(f"  Output saved to: {output}")
-        
+        session.logger.info(f"  Output saved to: {saved_path}")
+
         # Auto-monitor if structure specified
         if monitor is not None:
             session.logger.info(f"Starting auto-monitor for structure #{monitor.id_string}...")
             # Apply initial coloring
-            _recolor(session, monitor, str(output), 1, None, metric, "CA",
+            _recolor(session, monitor, str(saved_path), 1, None, metric, "CA",
                      None, None, halfwindow=half_window)
             # Start monitoring (with default 0.5s interval)
-            daqcolor_monitor(session, monitor, npy_path=str(output), k=1, colormap=None,
+            daqcolor_monitor(session, monitor, npy_path=str(saved_path), k=1, colormap=None,
                            metric=metric, atom_name="CA", half_window=half_window, on=True, interval=0.5)
-        
-        return str(output)
+
+        return str(saved_path)
         
     except Exception as e:
         session.logger.error(f"DAQ score computation failed: {e}")
@@ -648,7 +651,7 @@ def daqscore_run(session, map_input, contour, structure, *, output=None, stride=
     
     try:
         # Step 1: Compute DAQ scores
-        points, scores = compute_daq_scores(
+        points, scores, actual_output_path = compute_daq_scores(
             session,
             map_source,
             output_path=output,
@@ -658,16 +661,19 @@ def daqscore_run(session, map_input, contour, structure, *, output=None, stride=
             max_points=max_points,
             model_path=model,
         )
-        
+
+        # Use the actual output path (may differ from requested if fallback was used)
+        saved_path = actual_output_path if actual_output_path else output
+
         # Step 2: Apply coloring to structure
         session.logger.info(f"Applying DAQ coloring to structure #{structure.id_string}...")
-        _recolor(session, structure, str(output), k, colormap, metric, "CA", 
+        _recolor(session, structure, str(saved_path), k, colormap, metric, "CA",
                  None, None, halfwindow=half_window)
-        
+
         session.logger.info(f"DAQ score computation and coloring completed!")
-        
-        return str(output)
-        
+
+        return str(saved_path)
+
     except Exception as e:
         session.logger.error(f"DAQ score computation failed: {e}")
         raise
