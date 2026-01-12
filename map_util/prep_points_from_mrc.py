@@ -83,7 +83,7 @@ def save_zarr_volume(vol: np.ndarray, out_dir: str, chunks=(64, 64, 64)):
     return store_path
 
 import numpy as np
-from typing import Optional
+from typing import Optional, Tuple
 
 def threshold_points(
     vol: np.ndarray,
@@ -92,8 +92,8 @@ def threshold_points(
     origin: np.ndarray,       # (ox, oy, oz) in Å, for index (0,0,0)
     max_points: Optional[int] = None,
     stride: int = 1,
-    origin_is_center: bool = True,  # False の場合は +0.5 ボクセルオフセットを入れる
-) -> np.ndarray:
+    origin_is_center: bool = True,  # False の場合は +0.5 voxel offset?
+) -> Tuple[np.ndarray, np.ndarray]:
     """Return (N,3) world coords (Å) for voxels with density ≥ contour.
        vol is indexed as (Z, Y, X); output is (X, Y, Z).
     """
@@ -102,19 +102,25 @@ def threshold_points(
         mask = vol_s >= contour
         idx_zyx = np.argwhere(mask)              # (k,3): z,y,x in strided grid
         if idx_zyx.size == 0:
-            return np.zeros((0, 3), dtype=np.float32)
+            return (np.zeros((0, 3), np.float32),
+                    np.zeros((0,), np.float32))
         # 元グリッドに戻す
         idx_zyx = idx_zyx * stride
     else:
         mask = vol >= contour
         idx_zyx = np.argwhere(mask)
         if idx_zyx.size == 0:
-            return np.zeros((0, 3), dtype=np.float32)
+            return (np.zeros((0, 3), np.float32),
+                    np.zeros((0,), np.float32))
+
+    # --- density values at selected voxels ---
+    dens = vol[idx_zyx[:, 0], idx_zyx[:, 1], idx_zyx[:, 2]].astype(np.float32)
 
     # Downsample
     if max_points is not None and idx_zyx.shape[0] > max_points:
         sel = np.random.choice(idx_zyx.shape[0], size=max_points, replace=False)
         idx_zyx = idx_zyx[sel]
+        dens = dens[sel]
 
     # ZYX -> XYZ に並べ替え
     idx_xyz = idx_zyx[:, ::-1].astype(np.float32)   # (x, y, z)
@@ -125,7 +131,7 @@ def threshold_points(
 
     # world = origin + idx_xyz * voxel_size   （各軸別スケール）
     pts = origin[None, :].astype(np.float32) + idx_xyz * voxel_size[None, :].astype(np.float32)
-    return pts.astype(np.float32)
+    return pts.astype(np.float32), dens.astype(np.float32)
 
 import numpy as np
 
@@ -198,7 +204,7 @@ def build_one(entry, out_root: str, max_points: Optional[int], stride: int):
     os.makedirs(out_dir, exist_ok=True)
 
     vol, voxel_size, origin = read_mrc_with_meta(map_path)
-    vol = np.maximum(vol, 0) #value <=0 を 0 にクリップ
+    vol = np.maximum(vol, 0) #value <=0 -> ZERO
 
     c_top = entry.get('top_c', 0.95)  # entry で指定されていれば使う
     p_low = 0.0
@@ -223,9 +229,10 @@ def build_one(entry, out_root: str, max_points: Optional[int], stride: int):
     save_zarr_volume(vol_norm.astype(np.float32), out_dir)
 
     # points は従来通り RAW から抽出（等値面の一貫性を保つ）
-    pts = threshold_points(vol, contour=contour, voxel_size=voxel_size, origin=origin,
+    pts, dens = threshold_points(vol, contour=contour, voxel_size=voxel_size, origin=origin,
                            max_points=max_points, stride=stride)
     np.save(os.path.join(out_dir, 'points.npy'), pts)
+    np.save(os.path.join(out_dir, 'density.npy'), dens)
 
     meta = {
         'voxel_size': voxel_size.tolist(),
