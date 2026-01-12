@@ -51,8 +51,8 @@ class MapPointPatchDataset(Dataset):
         map_ids: List[str],
         Np: int = 4096,
         patch_vox: int = 23,
-        intensity_jitter: float = 0.1,  # +/- fraction
-        noise_std: float = 0.05,
+        intensity_jitter: float = 0.000,  # +/- fraction
+        noise_std: float = 0.000,
         dtype: str = 'float32',
         points_override: Optional[Dict[str, np.ndarray]] = None,
     ):
