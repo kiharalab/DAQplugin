@@ -1,5 +1,5 @@
 <BundleInfo name="ChimeraX-DaqColor"
-            version="0.11.0" package="chimerax.daqcolor"
+            version="0.12.0" package="chimerax.daqcolor"
             minSessionVersion="1" maxSessionVersion="1">
 
   <Author>Genki Terashi</Author>
@@ -37,10 +37,10 @@
       Show DAQ score points as markers</ChimeraXClassifier>    
     <ChimeraXClassifier>ChimeraX :: Command :: daqcolor clear :: General ::
       Close marker models</ChimeraXClassifier>
-    <ChimeraXClassifier>ChimeraX :: Command :: daqscore compute :: Volume Data ::
-      Compute DAQ scores from a cryo-EM map</ChimeraXClassifier>
-    <ChimeraXClassifier>ChimeraX :: Command :: daqscore run :: Volume Data ::
-      Compute and apply DAQ scores</ChimeraXClassifier>
+    <ChimeraXClassifier>ChimeraX :: Command :: daqscore compute_grid :: Volume Data ::
+      Compute DAQ scores from a cryo-EM map using contour threshold</ChimeraXClassifier>
+    <ChimeraXClassifier>ChimeraX :: Command :: daqscore compute_pdb :: Volume Data ::
+      Compute DAQ scores at heavy atom positions from a PDB structure</ChimeraXClassifier>
   </Classifiers>
 
 </BundleInfo>

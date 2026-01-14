@@ -455,12 +455,13 @@ from chimerax.core.commands import OpenFileNameArg, SaveFileNameArg, Or
 from chimerax.map import MapArg
 
 
-def daqscore_compute(session, map_input, contour, *, output=None, stride=2,
-                     batch_size=512, max_points=500000, model=None,
-                     monitor=None, metric="aa_score", half_window=9):
+def daqscore_compute_grid(session, map_input, contour, *, structure=None, output=None,
+                             stride=2, batch_size=512, max_points=500000, model=None,
+                             metric="aa_score", k=1, colormap=None, half_window=9,
+                             monitor=False):
     """
     Compute DAQ scores from a cryo-EM map.
-    
+
     Parameters
     ----------
     session : ChimeraX session
@@ -468,6 +469,8 @@ def daqscore_compute(session, map_input, contour, *, output=None, stride=2,
         Path to input MRC/MAP file OR a ChimeraX Volume model (e.g., #1)
     contour : float
         Contour threshold for density map
+    structure : Model, optional
+        Structure model to apply coloring after computation
     output : str, optional
         Path to save output NPY file (auto-generated if not specified)
     stride : int
@@ -478,12 +481,16 @@ def daqscore_compute(session, map_input, contour, *, output=None, stride=2,
         Maximum number of points (default: 500000)
     model : str, optional
         Path to ONNX model (uses bundled model if not specified)
-    monitor : Model, optional
-        Structure model to auto-monitor after computation
     metric : str
-        Coloring metric for monitoring: "aa_score", "atom_score", or "aa_conf:XXX"
+        Coloring metric: "aa_score", "atom_score", or "aa_conf:XXX"
+    k : int
+        Number of nearest neighbors for coloring (default: 1)
+    colormap : Colormap, optional
+        Color map for visualization
     half_window : int
         Half window size for score smoothing (default: 9)
+    monitor : bool
+        If True and structure is specified, start live monitoring (default: False)
     """
     from pathlib import Path
     from chimerax.map import Volume
@@ -546,15 +553,17 @@ def daqscore_compute(session, map_input, contour, *, output=None, stride=2,
         session.logger.info(f"  Points: {points.shape[0]}")
         session.logger.info(f"  Output saved to: {saved_path}")
 
-        # Auto-monitor if structure specified
-        if monitor is not None:
-            session.logger.info(f"Starting auto-monitor for structure #{monitor.id_string}...")
-            # Apply initial coloring
-            _recolor(session, monitor, str(saved_path), 1, None, metric, "CA",
+        # Apply coloring if structure specified
+        if structure is not None:
+            session.logger.info(f"Applying DAQ coloring to structure #{structure.id_string}...")
+            _recolor(session, structure, str(saved_path), k, colormap, metric, "CA",
                      None, None, halfwindow=half_window)
-            # Start monitoring (with default 0.5s interval)
-            daqcolor_monitor(session, monitor, npy_path=str(saved_path), k=1, colormap=None,
-                           metric=metric, atom_name="CA", half_window=half_window, on=True, interval=0.5)
+
+            # Start monitoring if requested
+            if monitor:
+                session.logger.info(f"Starting monitor for structure #{structure.id_string}...")
+                daqcolor_monitor(session, structure, npy_path=str(saved_path), k=k, colormap=colormap,
+                               metric=metric, atom_name="CA", half_window=half_window, on=True, interval=0.5)
 
         return str(saved_path)
         
@@ -563,125 +572,10 @@ def daqscore_compute(session, map_input, contour, *, output=None, stride=2,
         raise
 
 
-daqscore_compute_desc = CmdDesc(
+daqscore_compute_grid_desc = CmdDesc(
     required=[("map_input", Or(MapArg, OpenFileNameArg)), ("contour", FloatArg)],
     keyword=[
-        ("output", SaveFileNameArg),
-        ("stride", IntArg),
-        ("batch_size", IntArg),
-        ("max_points", IntArg),
-        ("model", OpenFileNameArg),
-        ("monitor", ModelArg),
-        ("metric", StringArg),
-        ("half_window", IntArg),
-    ],
-    synopsis="Compute DAQ scores from a cryo-EM map (file path or loaded volume #id)"
-)
-
-
-def daqscore_run(session, map_input, contour, structure, *, output=None, stride=2,
-                 batch_size=512, max_points=500000, model=None,
-                 metric="aa_score", k=1, colormap=None, half_window=9):
-    """
-    Compute DAQ scores and apply coloring to a structure in one step.
-    
-    Parameters
-    ----------
-    session : ChimeraX session
-    map_input : str or Volume
-        Path to input MRC/MAP file OR a ChimeraX Volume model (e.g., #1)
-    contour : float
-        Contour threshold for density map
-    structure : Model
-        Structure model to color
-    output : str, optional
-        Path to save output NPY file
-    stride : int
-        Stride for point sampling (default: 2)
-    batch_size : int
-        Batch size for inference (default: 512)
-    max_points : int
-        Maximum number of points (default: 500000)
-    model : str, optional
-        Path to ONNX model
-    metric : str
-        Coloring metric: "aa_score", "atom_score", or "aa_conf:XXX"
-    k : int
-        Number of nearest neighbors for coloring (default: 1)
-    colormap : Colormap, optional
-        Color map for visualization
-    half_window : int
-        Half window size for score smoothing (default: 9)
-    """
-    from pathlib import Path
-    from chimerax.map import Volume
-    
-    # Check for onnxruntime
-    try:
-        import onnxruntime
-    except ImportError:
-        session.logger.error(
-            "onnxruntime is not installed. Please install it with:\n"
-            "  pip install onnxruntime"
-        )
-        return
-    
-    from .compute import compute_daq_scores
-    
-    # Determine if input is a Volume model or file path
-    if isinstance(map_input, Volume):
-        volume = map_input
-        map_name = volume.name or f"volume_{volume.id_string}"
-        session.logger.info(f"Computing DAQ scores for volume: #{volume.id_string}")
-        
-        if output is None:
-            output = Path.cwd() / f"{map_name.replace(' ', '_')}_daq_scores.npy"
-        
-        map_source = volume
-    else:
-        map_path = Path(map_input)
-        session.logger.info(f"Computing DAQ scores for file: {map_path}")
-        
-        if output is None:
-            output = map_path.parent / f"{map_path.stem}_daq_scores.npy"
-        
-        map_source = map_path
-    
-    session.logger.info(f"Computing DAQ scores and applying to structure #{structure.id_string}...")
-    
-    try:
-        # Step 1: Compute DAQ scores
-        points, scores, actual_output_path = compute_daq_scores(
-            session,
-            map_source,
-            output_path=output,
-            contour=contour,
-            stride=stride,
-            batch_size=batch_size,
-            max_points=max_points,
-            model_path=model,
-        )
-
-        # Use the actual output path (may differ from requested if fallback was used)
-        saved_path = actual_output_path if actual_output_path else output
-
-        # Step 2: Apply coloring to structure
-        session.logger.info(f"Applying DAQ coloring to structure #{structure.id_string}...")
-        _recolor(session, structure, str(saved_path), k, colormap, metric, "CA",
-                 None, None, halfwindow=half_window)
-
-        session.logger.info(f"DAQ score computation and coloring completed!")
-
-        return str(saved_path)
-
-    except Exception as e:
-        session.logger.error(f"DAQ score computation failed: {e}")
-        raise
-
-
-daqscore_run_desc = CmdDesc(
-    required=[("map_input", Or(MapArg, OpenFileNameArg)), ("contour", FloatArg), ("structure", ModelArg)],
-    keyword=[
+        ("structure", ModelArg),
         ("output", SaveFileNameArg),
         ("stride", IntArg),
         ("batch_size", IntArg),
@@ -691,7 +585,139 @@ daqscore_run_desc = CmdDesc(
         ("k", IntArg),
         ("colormap", ColormapArg),
         ("half_window", IntArg),
+        ("monitor", BoolArg),
     ],
-    synopsis="Compute DAQ scores and apply coloring to a structure (accepts file path or volume #id)"
+    synopsis="Compute DAQ scores from a cryo-EM map (file path or loaded volume #id)"
+)
+
+
+
+
+# ===========================================================================
+# DAQ Score PDB-based Computation Command
+# ===========================================================================
+
+def daqscore_compute_pdb(session, map_input, *, structure=None, output=None,
+                         batch_size=512, model=None, metric="aa_score",
+                         k=1, colormap=None, half_window=9, apply_color=True):
+    """
+    Compute DAQ scores using heavy atom positions from a PDB structure.
+
+    This version uses heavy atom coordinates from the structure as query points
+    instead of grid points from the map. Reference distributions are computed
+    from atoms with density >= 0.
+
+    Parameters
+    ----------
+    session : ChimeraX session
+    map_input : str or Volume
+        Path to input MRC/MAP file OR a ChimeraX Volume model (e.g., #1)
+    structure : Model
+        Structure model whose heavy atom coordinates will be used
+    output : str, optional
+        Path to save output NPY file (auto-generated if not specified)
+    batch_size : int
+        Batch size for inference (default: 512)
+    model : str, optional
+        Path to ONNX model (uses bundled model if not specified)
+    metric : str
+        Coloring metric: "aa_score", "atom_score", or "aa_conf:XXX"
+    k : int
+        Number of nearest neighbors for coloring (default: 1)
+    colormap : Colormap, optional
+        Color map for visualization
+    half_window : int
+        Half window size for score smoothing (default: 9)
+    apply_color : bool
+        If True, apply coloring to structure after computation (default: True)
+    """
+    from pathlib import Path
+    from chimerax.map import Volume
+
+    # Check structure is provided
+    if structure is None:
+        session.logger.error("structure argument is required")
+        return
+
+    # Check for onnxruntime
+    try:
+        import onnxruntime
+    except ImportError:
+        session.logger.error(
+            "onnxruntime is not installed. Please install it with:\n"
+            "  pip install onnxruntime"
+        )
+        return
+
+    from .compute import compute_daq_scores_pdb
+
+    # Determine if input is a Volume model or file path
+    if isinstance(map_input, Volume):
+        volume = map_input
+        map_name = volume.name or f"volume_{volume.id_string}"
+        session.logger.info(f"Computing DAQ scores (PDB mode) for volume: #{volume.id_string}")
+
+        if output is None:
+            output = Path.cwd() / f"{map_name.replace(' ', '_')}_{structure.name}_pdb_daq_scores.npy"
+
+        map_source = volume
+    else:
+        map_path = Path(map_input)
+        session.logger.info(f"Computing DAQ scores (PDB mode) for file: {map_path}")
+
+        if output is None:
+            output = map_path.parent / f"{map_path.stem}_{structure.name}_pdb_daq_scores.npy"
+
+        map_source = map_path
+
+    session.logger.info(f"  Structure: #{structure.id_string} ({structure.name})")
+    session.logger.info(f"  Output: {output}")
+
+    try:
+        # Compute DAQ scores at heavy atom positions
+        points, scores, actual_output_path = compute_daq_scores_pdb(
+            session,
+            map_source,
+            structure,
+            output_path=output,
+            batch_size=batch_size,
+            model_path=model,
+        )
+
+        # Use the actual output path (may differ from requested if fallback was used)
+        saved_path = actual_output_path if actual_output_path else output
+
+        session.logger.info(f"DAQ score computation (PDB mode) completed!")
+        session.logger.info(f"  Heavy atoms: {points.shape[0]}")
+        session.logger.info(f"  Output saved to: {saved_path}")
+
+        # Apply coloring to structure if requested
+        if apply_color:
+            session.logger.info(f"Applying DAQ coloring to structure #{structure.id_string}...")
+            _recolor(session, structure, str(saved_path), k, colormap, metric, "CA",
+                     None, None, halfwindow=half_window)
+
+        return str(saved_path)
+
+    except Exception as e:
+        session.logger.error(f"DAQ score computation (PDB mode) failed: {e}")
+        raise
+
+
+daqscore_compute_pdb_desc = CmdDesc(
+    required=[("map_input", Or(MapArg, OpenFileNameArg))],
+    keyword=[
+        ("structure", ModelArg),
+        ("output", SaveFileNameArg),
+        ("batch_size", IntArg),
+        ("model", OpenFileNameArg),
+        ("metric", StringArg),
+        ("k", IntArg),
+        ("colormap", ColormapArg),
+        ("half_window", IntArg),
+        ("apply_color", BoolArg),
+    ],
+    required_arguments=["structure"],
+    synopsis="Compute DAQ scores at heavy atom positions from a PDB structure"
 )
 

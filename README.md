@@ -114,10 +114,10 @@ help daqcolor
 #### Apply DAQ coloring once
 
 ```
-daqcolor apply npyPath model [k N] [half_window N] [colormap] [metric] [atomName] [clampMin] [clampMax]
+daqcolor apply npyPath model [k N] [half_window N] [colormap] [metric] [atom_name CA] [clamp_min clampMin] [clamp_max clampMax]
 ```
 
-- `npyPath` : Path to the numpy file computed by NoteBook.  
+- `npyPath` : Path to the numpy file computed by NoteBook (positional argument).  
 - `model`   : ChimeraX model ID (e.g., `#1`)  
 - `k` : Number of nearest neighbors for kNN (default: 1)
 - `half_window` : Window averaging half-width (n±half_window, default: 9)
@@ -126,8 +126,8 @@ daqcolor apply npyPath model [k N] [half_window N] [colormap] [metric] [atomName
   - `aa_score` — DAQ(AA) score  
   - `atom_score` — DAQ(CA) score  
   - `aa_conf:<AA>` — DAQ confidence for a specific amino-acid type  
-- `atomName` : Atom name (default: CA)  
-- `clampMin`, `clampMax` : Optional score clamping  
+- `atom_name` : Atom name (default: CA)  
+- `clamp_min`, `clamp_max` : Optional score clamping  
 
 **Examples**
 
@@ -144,7 +144,7 @@ daqcolor apply ./points_AA_ATOM_SS_swap.npy #1 metric atom_score
 #### Live recoloring
 
 ```
-daqcolor monitor model [npy_path npyPath] [k N] [half_window N] [colormap] [metric] [atomName] [on true|false]
+daqcolor monitor model [npy_path npyPath] [k N] [half_window N] [colormap] [metric] [atom_name CA] [on true|false] [interval N]
 ```
 
 **Parameters:**
@@ -154,14 +154,18 @@ daqcolor monitor model [npy_path npyPath] [k N] [half_window N] [colormap] [metr
 - `half_window` : Window averaging half-width (default: 9)
 - `colormap` : Optional colormap for visualization
 - `metric` : Scoring metric (`aa_score`, `atom_score`, or `aa_conf:<AA>`)
-- `atomName` : Atom name (default: CA)
+- `atom_name` : Atom name (default: CA)
 - `on` : Enable (`true`) or disable (`false`) monitoring (default: `true`)
+- `interval` : Update frequency in seconds (default: 0.5)
 
 **Examples:**
 
 ```bash
 # Start monitoring (npy_path required)
 daqcolor monitor #2 npy_path ./points_AA_ATOM_SS_swap.npy metric aa_score
+
+# Start monitoring with custom update interval
+daqcolor monitor #2 npy_path ./points_AA_ATOM_SS_swap.npy metric aa_score interval 1.0
 
 # Stop monitoring (simpler - no npy_path needed)
 daqcolor monitor #2 on false
@@ -170,6 +174,7 @@ daqcolor monitor #2 on false
 **Notes:**
 - If you run `daqcolor monitor` on the same model multiple times, it will automatically replace the previous monitor
 - To stop monitoring, use `on false` without specifying the npy_path
+- The `interval` parameter controls how frequently the coloring is updated (throttling)
 ### Example: EMD-22456 and mis-aligned model
 
 - **Mis-aligned model**  
@@ -194,17 +199,17 @@ daqcolor monitor #2 on false
 #### Visualize point clouds
 
 ```
-daqcolor points npyPath [radius] [metric] [colormap] [clampMin] [clampMax]
+daqcolor points npyPath [radius] [metric] [colormap] [clamp_min clampMin] [clamp_max clampMax]
 ```
 
 **Parameters:**
-- `npyPath` : Path to the numpy file
+- `npyPath` : Path to the numpy file (positional argument)
 - `radius` : Marker radius (default: 0.4)
 - `metric` : Optional metric for coloring:
   - `aa_conf` — Maximum confidence across all amino acids
   - `aa_top:<AA>` — Confidence for a specific amino acid (e.g., `aa_top:ALA`)
 - `colormap` : Optional colormap for visualization
-- `clampMin`, `clampMax` : Optional score clamping
+- `clamp_min`, `clamp_max` : Optional score clamping
 
 **Examples:**
 
@@ -234,59 +239,25 @@ The `daqscore` commands allow you to compute DAQ scores directly within ChimeraX
 > **Recommendation**  
 > For large maps or if you have a weak CPU, consider using the [Google Colab notebook](https://colab.research.google.com/github/gterashi/DAQplugin/blob/main/DAQ_Score_Grid.ipynb) instead, which provides free GPU acceleration and can handle larger datasets more efficiently.
 
-#### Compute DAQ scores from a map
+#### Compute DAQ scores from a map (grid-based)
 
 > **Note**  
 > For large maps or if you have a weak CPU, consider using the [Colab version](https://colab.research.google.com/github/gterashi/DAQplugin/blob/main/DAQ_Score_Grid.ipynb) instead, which provides better performance with GPU acceleration.
 
 ```bash
-daqscore compute mapInput contour [output npyPath] [stride N] [batch_size N] [max_points N] [model modelPath] [monitor #model] [metric] [half_window N]
+daqscore compute_grid mapInput contour [output npyPath] [stride N] [batch_size N] [max_points N] [model modelPath] [structure #model] [monitor true|false] [metric] [k N] [colormap] [half_window N]
 ```
 
 **Parameters:**
-- `mapInput`: Path to MRC/MAP file OR ChimeraX Volume model (e.g., `#1`) - **required**
-- `contour`: Contour threshold value - **required**
+- `mapInput`: Path to MRC/MAP file OR ChimeraX Volume model (e.g., `#1`) - **required** (positional)
+- `contour`: Contour threshold value - **required** (positional)
 - `output`: Path to save output NPY file (auto-generated if not specified)
 - `stride`: Stride for point sampling (default: 2, higher=faster but less dense)
 - `batch_size`: Batch size for inference (default: 512)
 - `max_points`: Maximum number of points to sample (default: 500000)
 - `model`: Optional path to ONNX model file (uses bundled model if not specified)
-- `monitor`: Optional structure model to auto-color and monitor
-- `metric`: Coloring metric for monitoring (`aa_score`, `atom_score`, or `aa_conf:<AA>`, default: `aa_score`)
-- `half_window`: Half window size for score smoothing (default: 9)
-
-**Examples:**
-
-```bash
-# Compute from a file path
-daqscore compute /path/to/map.mrc 0.5 output /path/to/output.npy
-
-# Compute from loaded volume (contour value required)
-daqscore compute #1 0.5
-
-# Compute and auto-monitor structure
-daqscore compute #1 0.5 monitor #2 metric aa_score half_window 9
-```
-
----
-
-#### Compute and apply coloring in one step
-
-```bash
-daqscore run mapInput contour structure [output npyPath] [stride N] [batch_size N] [max_points N] [model modelPath] [metric] [k N] [colormap] [half_window N]
-```
-
-This command combines computation and coloring in a single step.
-
-**Parameters:**
-- `mapInput`: Path to MRC/MAP file OR ChimeraX Volume model (e.g., `#1`) - **required**
-- `contour`: Contour threshold value - **required**
-- `structure`: Structure model to color (e.g., `#2`) - **required**
-- `output`: Path to save output NPY file (auto-generated if not specified)
-- `stride`: Stride for point sampling (default: 2)
-- `batch_size`: Batch size for inference (default: 512)
-- `max_points`: Maximum number of points to sample (default: 500000)
-- `model`: Optional path to ONNX model file
+- `structure`: Optional structure model to apply coloring after computation
+- `monitor`: If `true` and structure is specified, start live monitoring (default: `false`)
 - `metric`: Coloring metric (`aa_score`, `atom_score`, or `aa_conf:<AA>`, default: `aa_score`)
 - `k`: Number of nearest neighbors for kNN (default: 1)
 - `colormap`: Optional colormap for visualization
@@ -295,13 +266,52 @@ This command combines computation and coloring in a single step.
 **Examples:**
 
 ```bash
-# Load map and structure, then compute and color
-open map.mrc
-open model.pdb
-daqscore run #1 0.5 #2 metric aa_score
+# Compute from a file path
+daqscore compute_grid /path/to/map.mrc 0.5 output /path/to/output.npy
+
+# Compute from loaded volume (contour value required)
+daqscore compute_grid #1 0.5
+
+# Compute and apply coloring to structure
+daqscore compute_grid #1 0.5 structure #2 metric aa_score
+
+# Compute, apply coloring, and start monitoring
+daqscore compute_grid #1 0.5 structure #2 monitor true metric aa_score half_window 9
+```
+
+---
+
+#### Compute DAQ scores from a map (PDB-based)
+
+This command computes DAQ scores using heavy atom positions from a PDB structure as query points, instead of grid points from the map. Reference distributions are computed from atoms with density >= 0.
+
+```bash
+daqscore compute_pdb mapInput structure #model [output npyPath] [batch_size N] [model modelPath] [metric] [k N] [colormap] [half_window N] [apply_color true|false]
+```
+
+**Parameters:**
+- `mapInput`: Path to MRC/MAP file OR ChimeraX Volume model (e.g., `#1`) - **required** (positional)
+- `structure`: Structure model whose heavy atom coordinates will be used - **required** (keyword)
+- `output`: Path to save output NPY file (auto-generated if not specified)
+- `batch_size`: Batch size for inference (default: 512)
+- `model`: Optional path to ONNX model file (uses bundled model if not specified)
+- `metric`: Coloring metric (`aa_score`, `atom_score`, or `aa_conf:<AA>`, default: `aa_score`)
+- `k`: Number of nearest neighbors for kNN (default: 1)
+- `colormap`: Optional colormap for visualization
+- `half_window`: Half window size for score smoothing (default: 9)
+- `apply_color`: If `true`, apply coloring to structure after computation (default: `true`)
+
+**Examples:**
+
+```bash
+# Compute scores at heavy atom positions and apply coloring
+daqscore compute_pdb #1 structure #2 metric aa_score
+
+# Compute without applying color
+daqscore compute_pdb #1 structure #2 apply_color false
 
 # With custom parameters
-daqscore run #1 0.5 #2 metric atom_score k 1 half_window 9
+daqscore compute_pdb #1 structure #2 metric atom_score k 1 half_window 9
 ```
 
 ---

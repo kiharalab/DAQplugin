@@ -25,11 +25,11 @@ class _API(BundleAPI):
             func, desc = cmd.daqcolor_clear, cmd.daqcolor_clear_desc
         
         # Computation commands (daqscore)
-        elif ci.name == "daqscore compute":
-            func, desc = cmd.daqscore_compute, cmd.daqscore_compute_desc
-        elif ci.name == "daqscore run":
-            func, desc = cmd.daqscore_run, cmd.daqscore_run_desc
-        
+        elif ci.name == "daqscore compute_grid":
+            func, desc = cmd.daqscore_compute_grid, cmd.daqscore_compute_grid_desc
+        elif ci.name == "daqscore compute_pdb":
+            func, desc = cmd.daqscore_compute_pdb, cmd.daqscore_compute_pdb_desc
+
         else:
             raise ValueError(f"Unknown command: {ci.name}")
 
