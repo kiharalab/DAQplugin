@@ -25,7 +25,6 @@ DAQplugin/
 ├── map_util/             # Map preprocessing utilities
 ├── DAQ_Score.ipynb       # DAQ score calculation notebook
 ├── DAQ_Score_Grid.ipynb  # Grid / NPY generation notebook
-├── daq_score_grid.py     # Standalone DAQ scoring script
 ├── README.md
 └── LICENSE
 ```
