@@ -244,7 +244,7 @@ The `daqscore` commands allow you to compute DAQ scores directly within ChimeraX
 > For large maps or if you have a weak CPU, consider using the [Colab version](https://colab.research.google.com/github/gterashi/DAQplugin/blob/main/DAQ_Score_Grid.ipynb) instead, which provides better performance with GPU acceleration.
 
 ```bash
-daqscore compute_grid mapInput contour [output npyPath] [stride N] [batch_size N] [max_points N] [model modelPath] [structure #model] [monitor true|false] [metric] [k N] [colormap] [half_window N]
+daqscore compute_grid mapInput contour [output npyPath] [stride N] [batch_size N] [max_points N] [ckpt ckptPath] [structure #model] [monitor true|false] [metric] [k N] [colormap] [half_window N]
 ```
 
 **Parameters:**
@@ -254,7 +254,7 @@ daqscore compute_grid mapInput contour [output npyPath] [stride N] [batch_size N
 - `stride`: Stride for point sampling (default: 2, higher=faster but less dense)
 - `batch_size`: Batch size for inference (default: 512)
 - `max_points`: Maximum number of points to sample (default: 500000)
-- `model`: Optional path to ONNX model file (uses bundled model if not specified)
+- `ckpt`: Optional path to ONNX checkpoint/model file (uses bundled model if not specified)
 - `structure`: Optional structure model to apply coloring after computation
 - `monitor`: If `true` and structure is specified, start live monitoring (default: `false`)
 - `metric`: Coloring metric (`aa_score`, `atom_score`, or `aa_conf:<AA>`, default: `aa_score`)
@@ -285,7 +285,7 @@ daqscore compute_grid #1 0.5 structure #2 monitor true metric aa_score half_wind
 This command computes DAQ scores using heavy atom positions from a PDB structure as query points, instead of grid points from the map. Reference distributions are computed from atoms with density >= 0.
 
 ```bash
-daqscore compute_pdb mapInput structure #model [output npyPath] [batch_size N] [model modelPath] [metric] [k N] [colormap] [half_window N] [apply_color true|false]
+daqscore compute_pdb mapInput structure #model [output npyPath] [batch_size N] [ckpt ckptPath] [metric] [k N] [colormap] [half_window N] [apply_color true|false] [save_model modelPath]
 ```
 
 **Parameters:**
@@ -293,12 +293,13 @@ daqscore compute_pdb mapInput structure #model [output npyPath] [batch_size N] [
 - `structure`: Structure model whose heavy atom coordinates will be used - **required** (keyword)
 - `output`: Path to save output NPY file (auto-generated if not specified)
 - `batch_size`: Batch size for inference (default: 512)
-- `model`: Optional path to ONNX model file (uses bundled model if not specified)
+- `ckpt`: Optional path to ONNX checkpoint/model file (uses bundled model if not specified)
 - `metric`: Coloring metric (`aa_score`, `atom_score`, or `aa_conf:<AA>`, default: `aa_score`)
 - `k`: Number of nearest neighbors for kNN (default: 1)
 - `colormap`: Optional colormap for visualization
 - `half_window`: Half window size for score smoothing (default: 9)
 - `apply_color`: If `true`, apply coloring to structure after computation (default: `true`)
+- `save_model`: Optional path to save the scored structure model (PDB or CIF format). Scores are written to B-factor field.
 
 **Examples:**
 
@@ -309,8 +310,11 @@ daqscore compute_pdb #1 structure #2 metric aa_score
 # Compute without applying color
 daqscore compute_pdb #1 structure #2 apply_color false
 
+# Compute and save scored model
+daqscore compute_pdb #1 structure #2 metric aa_score save_model scored_model.pdb
+
 # With custom parameters
-daqscore compute_pdb #1 structure #2 metric atom_score k 1 half_window 9
+daqscore compute_pdb #1 structure #2 metric atom_score k 1 half_window 9 save_model output.cif
 ```
 
 ---

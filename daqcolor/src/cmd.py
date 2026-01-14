@@ -456,7 +456,7 @@ from chimerax.map import MapArg
 
 
 def daqscore_compute_grid(session, map_input, contour, *, structure=None, output=None,
-                             stride=2, batch_size=512, max_points=500000, model=None,
+                             stride=2, batch_size=512, max_points=500000, ckpt=None,
                              metric="aa_score", k=1, colormap=None, half_window=9,
                              monitor=False):
     """
@@ -479,8 +479,8 @@ def daqscore_compute_grid(session, map_input, contour, *, structure=None, output
         Batch size for inference (default: 512)
     max_points : int
         Maximum number of points (default: 500000)
-    model : str, optional
-        Path to ONNX model (uses bundled model if not specified)
+    ckpt : str, optional
+        Path to ONNX checkpoint/model file (uses bundled model if not specified)
     metric : str
         Coloring metric: "aa_score", "atom_score", or "aa_conf:XXX"
     k : int
@@ -543,7 +543,7 @@ def daqscore_compute_grid(session, map_input, contour, *, structure=None, output
             stride=stride,
             batch_size=batch_size,
             max_points=max_points,
-            model_path=model,
+            model_path=ckpt,
         )
 
         # Use the actual output path (may differ from requested if fallback was used)
@@ -580,7 +580,7 @@ daqscore_compute_grid_desc = CmdDesc(
         ("stride", IntArg),
         ("batch_size", IntArg),
         ("max_points", IntArg),
-        ("model", OpenFileNameArg),
+        ("ckpt", OpenFileNameArg),
         ("metric", StringArg),
         ("k", IntArg),
         ("colormap", ColormapArg),
@@ -598,8 +598,9 @@ daqscore_compute_grid_desc = CmdDesc(
 # ===========================================================================
 
 def daqscore_compute_pdb(session, map_input, *, structure=None, output=None,
-                         batch_size=512, model=None, metric="aa_score",
-                         k=1, colormap=None, half_window=9, apply_color=True):
+                         batch_size=512, ckpt=None, metric="aa_score",
+                         k=1, colormap=None, half_window=9, apply_color=True,
+                         save_model=None):
     """
     Compute DAQ scores using heavy atom positions from a PDB structure.
 
@@ -618,8 +619,8 @@ def daqscore_compute_pdb(session, map_input, *, structure=None, output=None,
         Path to save output NPY file (auto-generated if not specified)
     batch_size : int
         Batch size for inference (default: 512)
-    model : str, optional
-        Path to ONNX model (uses bundled model if not specified)
+    ckpt : str, optional
+        Path to ONNX checkpoint/model file (uses bundled model if not specified)
     metric : str
         Coloring metric: "aa_score", "atom_score", or "aa_conf:XXX"
     k : int
@@ -630,6 +631,9 @@ def daqscore_compute_pdb(session, map_input, *, structure=None, output=None,
         Half window size for score smoothing (default: 9)
     apply_color : bool
         If True, apply coloring to structure after computation (default: True)
+    save_model : str, optional
+        Path to save the scored structure model (PDB or CIF format). 
+        Scores are written to B-factor field. If not specified, model is not saved.
     """
     from pathlib import Path
     from chimerax.map import Volume
@@ -681,7 +685,7 @@ def daqscore_compute_pdb(session, map_input, *, structure=None, output=None,
             structure,
             output_path=output,
             batch_size=batch_size,
-            model_path=model,
+            model_path=ckpt,
         )
 
         # Use the actual output path (may differ from requested if fallback was used)
@@ -697,6 +701,24 @@ def daqscore_compute_pdb(session, map_input, *, structure=None, output=None,
             _recolor(session, structure, str(saved_path), k, colormap, metric, "CA",
                      None, None, halfwindow=half_window)
 
+        # Save model if requested
+        if save_model is not None:
+            save_path = Path(save_model)
+            session.logger.info(f"Saving scored structure to: {save_path}")
+            # If apply_color was False, we still need to apply scores to B-factors for saving
+            if not apply_color:
+                session.logger.info(f"Applying DAQ scores to B-factors for saving...")
+                _recolor(session, structure, str(saved_path), k, colormap, metric, "CA",
+                         None, None, halfwindow=half_window)
+            try:
+                # Use ChimeraX save command to write the structure with B-factors
+                from chimerax.core.commands import run
+                run(session, f"save {save_path} #{structure.id_string}")
+                session.logger.info(f"Scored structure saved successfully")
+            except Exception as e:
+                session.logger.error(f"Failed to save structure: {e}")
+                raise
+
         return str(saved_path)
 
     except Exception as e:
@@ -710,12 +732,13 @@ daqscore_compute_pdb_desc = CmdDesc(
         ("structure", ModelArg),
         ("output", SaveFileNameArg),
         ("batch_size", IntArg),
-        ("model", OpenFileNameArg),
+        ("ckpt", OpenFileNameArg),
         ("metric", StringArg),
         ("k", IntArg),
         ("colormap", ColormapArg),
         ("half_window", IntArg),
         ("apply_color", BoolArg),
+        ("save_model", SaveFileNameArg),
     ],
     required_arguments=["structure"],
     synopsis="Compute DAQ scores at heavy atom positions from a PDB structure"
