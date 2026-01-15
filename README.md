@@ -9,6 +9,9 @@ This repository provides:
 - Command-line utilities for processing and file export
 
 DAQ is included as a Git submodule to ensure consistency with published methods.
+---
+## DAQ score monitoring (7jsn version 1.1 and EMD-22458)
+<img src="img/demo.gif" width="600">
 
 ---
 
