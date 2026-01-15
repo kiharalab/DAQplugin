@@ -1,9 +1,9 @@
-<BundleInfo name="ChimeraX-DaqColor"
+<BundleInfo name="ChimeraX-daqplugin"
             version="0.12.0" package="chimerax.daqcolor"
             minSessionVersion="1" maxSessionVersion="1">
 
   <Author>Genki Terashi</Author>
-  <Email>you@example.com</Email>
+  <Email>gterashi@purdue.edu</Email>
   <URL>https://github.com/gterashi/DAQplugin</URL>
 
   <Synopsis>DAQ Score computation and visualization for cryo-EM models</Synopsis>
