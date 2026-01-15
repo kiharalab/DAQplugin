@@ -212,3 +212,5 @@ DiffModeler/
 
 # Local scripts
 clean.sh
+
+.DS_Store
