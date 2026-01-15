@@ -23,8 +23,9 @@ DAQplugin/
 │   └── 00README.txt
 ├── cli/                  # Command-line scripts
 ├── map_util/             # Map preprocessing utilities
-├── DAQ_Score.ipynb       # DAQ score calculation notebook
+├── DAQ_Score.ipynb       # Original DAQ score calculation notebook
 ├── DAQ_Score_Grid.ipynb  # Grid / NPY generation notebook
+├── DAQ_Score_Pdb.ipynb   # PDB coordinate based DAQ score calculation notebook
 ├── README.md
 └── LICENSE
 ```
@@ -51,7 +52,7 @@ git submodule update --init --recursive
 
 ---
 
-## 1. DAQ Score Computation (Jupyter Notebook on Google Colab)
+## 1. DAQ Score and NPY file Computation (Jupyter Notebook on Google Colab)
 
 ### Notebook
 
@@ -71,11 +72,31 @@ The generated `.npy` files are used by the ChimeraX plugin (`daqcolor`) for visu
 1. Provide:
    - Atomic model (`.pdb` or `.cif`)
    - Cryo-EM map (`.mrc` or `.map`)
-   - 
 2. Run the notebook cells sequentially
 3. Output:
    - `points_AA_ATOM_SS_swap.npy`
    - Optional: PDB file with DAQ score
+---
+### Notebook
+
+- [`DAQ_Score_Pdb.ipynb`](https://colab.research.google.com/github/gterashi/DAQplugin/blob/main/DAQ_Score_Pdb.ipynb)
+
+### Purpose
+
+This notebook computes:
+
+- DAQ scores from atomic models (PDB/CIF) and cryo-EM maps (MRC/MAP)
+- DAQ scores per residue are recorded in the atomic models.
+
+
+### Typical Workflow
+
+1. Provide:
+   - Atomic model (`.pdb` or `.cif`)
+   - Cryo-EM map (`.mrc` or `.map`)
+2. Run the notebook cells sequentially
+3. Output:
+   - PDB file with DAQ score
 
 ---
 
@@ -140,7 +161,8 @@ daqcolor apply ./points_AA_ATOM_SS_swap.npy #1 metric atom_score
 
 ---
 
-#### Live recoloring
+#### Live Monitoring
+- **daqcolor monitor** command shows DAQ score based on the current Atom coordinates.
 
 ```
 daqcolor monitor model [npy_path npyPath] [k N] [half_window N] [colormap] [metric] [atom_name CA] [on true|false] [interval N]
@@ -264,7 +286,7 @@ daqscore compute_grid mapInput contour [output npyPath] [stride N] [batch_size N
 
 **Examples:**
 
-```bash
+```
 # Compute from a file path
 daqscore compute_grid /path/to/map.mrc 0.5 output /path/to/output.npy
 
@@ -276,6 +298,9 @@ daqscore compute_grid #1 0.5 structure #2 metric aa_score
 
 # Compute, apply coloring, and start monitoring
 daqscore compute_grid #1 0.5 structure #2 monitor true metric aa_score half_window 9
+
+# Stop monitoring of #1
+daqcolor monitor #1 on false
 ```
 
 ---
