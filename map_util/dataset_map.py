@@ -51,9 +51,10 @@ class MapPointPatchDataset(Dataset):
         map_ids: List[str],
         Np: int = 4096,
         patch_vox: int = 23,
-        intensity_jitter: float = 0.1,  # +/- fraction
-        noise_std: float = 0.05,
+        intensity_jitter: float = 0.000,  # +/- fraction
+        noise_std: float = 0.000,
         dtype: str = 'float32',
+        points_override: Optional[Dict[str, np.ndarray]] = None,
     ):
         super().__init__()
         assert zarr is not None, "zarr is required (pip install zarr)"
@@ -65,19 +66,43 @@ class MapPointPatchDataset(Dataset):
         self.noise_std = noise_std
         self.dtype = np.float32 if dtype == 'float32' else np.float16
 
+        # optional external points
+        self.points_override = points_override or {}
+
         # index structures per map
         self._meta: Dict[str, Dict] = {}
         self._zarr: Dict[str, zarr.Group] = {}
-        self._points: Dict[str, np.ndarray] = {}
+        self._points: Dict[str, np.ndarray] = {} # (N,3) in Å
+        self._density: Dict[str, np.ndarray] = {}  #density values at points
+        
 
         for mid in self.map_ids:
             g = zarr.open(os.path.join(root, mid, 'map.zarr'), mode='r')
             self._zarr[mid] = g
             with open(os.path.join(root, mid, 'meta.json'), 'r') as f:
                 self._meta[mid] = json.load(f)
-            pts = np.load(os.path.join(root, mid, 'points.npy'))  # (N,3) in Å
-            assert pts.ndim == 2 and pts.shape[1] == 3
-            self._points[mid] = pts.astype(np.float32)
+
+            if mid in self.points_override:
+                # 1) external override points (highest priority)
+                pts = self.points_override[mid]
+                if not isinstance(pts, np.ndarray):
+                    raise TypeError(f"points_override[{mid}] must be a numpy array")
+                if not (pts.ndim == 2 and pts.shape[1] == 3):
+                    raise ValueError(f"points_override[{mid}] must have shape (N,3)")
+                if pts.shape[0] == 0:
+                    raise ValueError(f"points_override[{mid}] is empty")
+
+                self._points[mid] = pts.astype(np.float32)
+            else:
+                pts = np.load(os.path.join(root, mid, 'points.npy'))  # (N,3) in Å
+                assert pts.ndim == 2 and pts.shape[1] == 3
+                self._points[mid] = pts.astype(np.float32)
+
+                dens_path = os.path.join(root, mid, 'density.npy')     # (N,) density values at points
+                dens = np.load(dens_path)                              # (N,)
+                assert dens.ndim == 1 and dens.shape[0] == pts.shape[0], \
+                    f"density shape mismatch: {dens.shape} vs points {pts.shape}"
+                self._density[mid] = dens.astype(np.float32)
 
         # for sampling across maps with replacement
         self._cum_sizes = np.cumsum([self._points[m].shape[0] for m in self.map_ids])
@@ -132,22 +157,35 @@ class MapPointPatchDataset(Dataset):
         return patch
 
     # ------------------------------ sampling ------------------------------
-    def _sample_map_and_points(self) -> Tuple[str, np.ndarray]:
+    def _sample_map_and_points(self) -> Tuple[str, np.ndarray, np.ndarray, np.ndarray]:
         # choose map proportional to #points
         r = np.random.randint(0, self._total_points)
         midx = int(np.searchsorted(self._cum_sizes, r, side='right'))
         map_id = self.map_ids[midx]
-        pts = self._points[map_id]
+
+        pts = self._points[map_id]  # (N,3)
+
         # sample points within map
         if pts.shape[0] <= self.Np:
-            sel = np.arange(pts.shape[0])
+            sel = np.arange(pts.shape[0], dtype=np.int64)
         else:
-            sel = np.random.choice(pts.shape[0], size=self.Np, replace=False)
-        return map_id, pts[sel]
-    
+            sel = np.random.choice(pts.shape[0], size=self.Np, replace=False).astype(np.int64)
+
+        pts_sel = pts[sel]  # (Np,3)
+
+        # density: if points_override is used for this map_id, return zeros
+        if hasattr(self, "points_override") and (map_id in self.points_override):
+            dens_sel = np.zeros((pts_sel.shape[0],), dtype=np.float32)
+        else:
+            dens = self._density[map_id]  # (N,)
+            dens_sel = dens[sel].astype(np.float32)
+
+        return map_id, pts_sel, dens_sel, sel
+
+
     # ------------------------------ __getitem__ ------------------------------
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        map_id, pts_world = self._sample_map_and_points()  # (Np,3) in Å, ここは (X,Y,Z) とみなす
+        map_id, pts_world, dens_raw, sel = self._sample_map_and_points()  # (Np,3) in Å, and density values
 
         g = self._zarr[map_id]
         volume_zyx = g['volume'][:]  # (Z,Y,X)
@@ -169,6 +207,7 @@ class MapPointPatchDataset(Dataset):
 
         patches_t = torch.from_numpy(patches.astype(np.float32)).unsqueeze(1)
         points_t  = torch.from_numpy(pts_world.astype(np.float32))
+        density_t = torch.from_numpy(dens_raw.astype(np.float32))
         voxsz_t   = torch.from_numpy(voxel_xyz)   # (X,Y,Z)
         origin_t  = torch.from_numpy(origin_xyz)  # (X,Y,Z)
 
@@ -176,6 +215,7 @@ class MapPointPatchDataset(Dataset):
         return {
             'patches': patches_t,
             'points': points_t,
+            'density_raw': density_t,
             'map_id': map_id,
             'voxel_size': voxsz_t,
             'origin': origin_t,

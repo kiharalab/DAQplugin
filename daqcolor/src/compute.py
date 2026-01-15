@@ -255,7 +255,7 @@ def extract_threshold_points(
     contour: float = 0.0,
     stride: int = 2,
     max_points: Optional[int] = 500000,
-) -> np.ndarray:
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Extract grid points above contour threshold.
 
@@ -276,8 +276,9 @@ def extract_threshold_points(
 
     Returns
     -------
-    np.ndarray
-        Points array with shape (N, 3) in world coordinates (X, Y, Z)
+    tuple
+        (points, density) where points is (N, 3) in world coordinates (X, Y, Z)
+        and density is (N,) raw density values at each point
     """
     # Apply stride
     if stride > 1:
@@ -285,18 +286,22 @@ def extract_threshold_points(
         mask = vol_s >= contour
         idx_zyx = np.argwhere(mask)
         if idx_zyx.size == 0:
-            return np.zeros((0, 3), dtype=np.float32)
+            return np.zeros((0, 3), dtype=np.float32), np.zeros((0,), dtype=np.float32)
         idx_zyx = idx_zyx * stride
     else:
         mask = vol_data >= contour
         idx_zyx = np.argwhere(mask)
         if idx_zyx.size == 0:
-            return np.zeros((0, 3), dtype=np.float32)
+            return np.zeros((0, 3), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+
+    # Get density values at selected voxels (from raw data)
+    density = vol_data[idx_zyx[:, 0], idx_zyx[:, 1], idx_zyx[:, 2]].astype(np.float32)
 
     # Downsample if needed
     if max_points is not None and idx_zyx.shape[0] > max_points:
         sel = np.random.choice(idx_zyx.shape[0], size=max_points, replace=False)
         idx_zyx = idx_zyx[sel]
+        density = density[sel]
 
     # Convert ZYX indices to XYZ world coordinates
     idx_xyz = idx_zyx[:, ::-1].astype(np.float32)  # ZYX -> XYZ
@@ -307,7 +312,7 @@ def extract_threshold_points(
 
     points = origin_xyz + idx_xyz * step_xyz
 
-    return points.astype(np.float32)
+    return points.astype(np.float32), density
 
 
 def extract_patches(
@@ -393,6 +398,8 @@ def compute_log_ratio_scores(
     aa_probs: np.ndarray,
     atom_probs: np.ndarray,
     ss_probs: np.ndarray,
+    density: np.ndarray,
+    ref_contour: float,
 ) -> np.ndarray:
     """
     Compute DAQ log-ratio scores from probability predictions.
@@ -407,6 +414,10 @@ def compute_log_ratio_scores(
         Atom type probabilities (N, 6)
     ss_probs : np.ndarray
         Secondary structure probabilities (N, 3)
+    density : np.ndarray
+        Raw density values at each point (N,)
+    ref_contour : float
+        Contour threshold for reference distribution filtering
 
     Returns
     -------
@@ -415,10 +426,17 @@ def compute_log_ratio_scores(
     """
     eps = 1e-12
 
-    # Compute reference distributions (mean across all points)
-    ref_aa = np.clip(aa_probs.mean(axis=0), eps, 1.0)
-    ref_atom = np.clip(atom_probs.mean(axis=0), eps, 1.0)
-    ref_ss = np.clip(ss_probs.mean(axis=0), eps, 1.0)
+    # Reference mask: points with density >= ref_contour
+    ref_mask = density >= ref_contour
+
+    if not np.any(ref_mask):
+        # Fallback: use all points if no points pass the threshold
+        ref_mask = np.ones(len(density), dtype=bool)
+
+    # Compute reference distributions from filtered points
+    ref_aa = np.clip(aa_probs[ref_mask].mean(axis=0), eps, 1.0)
+    ref_atom = np.clip(atom_probs[ref_mask].mean(axis=0), eps, 1.0)
+    ref_ss = np.clip(ss_probs[ref_mask].mean(axis=0), eps, 1.0)
 
     # Compute log-ratio scores
     aa_log = np.log(np.clip(aa_probs, eps, 1.0) / ref_aa[None, :]).astype(np.float32)
@@ -508,12 +526,15 @@ def compute_daq_scores(
     # Normalize volume
     data_norm = normalize_volume(data)
 
-    # Step 3: Extract points above contour
+    # Step 3: Extract points above contour * 0.5 (more points for better coverage)
+    # Reference distribution will be filtered by original contour later
+    extraction_contour = contour * 0.5
     update_progress(2, 6, "Extracting grid points...")
-    points = extract_threshold_points(data, origin, step, contour=contour, stride=stride, max_points=max_points)
+    points, density = extract_threshold_points(data, origin, step, contour=extraction_contour, stride=stride, max_points=max_points)
 
     n_points = points.shape[0]
-    session.logger.info(f"Extracted {n_points} points above contour {contour}")
+    session.logger.info(f"Extracted {n_points} points above contour {extraction_contour} (extraction threshold)")
+    session.logger.info(f"Reference will use points with density >= {contour} (original contour)")
 
     if n_points == 0:
         session.logger.warning("No points found above contour threshold!")
@@ -534,9 +555,207 @@ def compute_daq_scores(
 
     aa_probs, atom_probs, ss_probs = model.predict_batched(patches, batch_size=batch_size, progress_callback=inference_progress)
 
-    # Step 6: Compute log-ratio scores
+    # Step 6: Compute log-ratio scores (reference filtered by original contour)
     update_progress(5, 6, "Computing DAQ scores...")
-    scores = compute_log_ratio_scores(points, aa_probs, atom_probs, ss_probs)
+    ref_points = np.sum(density >= contour)
+    session.logger.info(f"Reference points: {ref_points}/{n_points} (density >= {contour})")
+    scores = compute_log_ratio_scores(points, aa_probs, atom_probs, ss_probs, density, contour)
+
+    # Save results if output path provided
+    actual_output_path = None
+    if output_path:
+        output_path = Path(output_path)
+        try:
+            # Try to write to the requested directory
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(str(output_path), scores)
+            actual_output_path = output_path
+            session.logger.info(f"Saved DAQ scores to: {output_path}")
+            session.logger.info(f"Output shape: {scores.shape}")
+        except (PermissionError, OSError):
+            # Fall back to user's home directory
+            safe_dir = Path.home() / "DAQcolor_output"
+            safe_dir.mkdir(parents=True, exist_ok=True)
+            actual_output_path = safe_dir / output_path.name
+            np.save(str(actual_output_path), scores)
+            session.logger.warning(f"Could not write to {output_path.parent}, saving to {actual_output_path}")
+            session.logger.info(f"Saved DAQ scores to: {actual_output_path}")
+            session.logger.info(f"Output shape: {scores.shape}")
+
+    update_progress(6, 6, "Done!")
+
+    return points, scores, actual_output_path
+
+
+def get_heavy_atom_coords(structure) -> np.ndarray:
+    """
+    Extract heavy atom (non-H) coordinates from a ChimeraX structure.
+
+    Parameters
+    ----------
+    structure : chimerax.atomic.Structure
+        ChimeraX structure model
+
+    Returns
+    -------
+    np.ndarray
+        Heavy atom coordinates (N, 3) in Angstroms
+    """
+    atoms = structure.atoms
+    # Filter out hydrogen atoms
+    heavy_mask = atoms.elements.names != 'H'
+    heavy_atoms = atoms[heavy_mask]
+    coords = heavy_atoms.scene_coords  # Use scene coordinates for alignment
+    return coords.astype(np.float32)
+
+
+def compute_log_ratio_scores_pdb(
+    points: np.ndarray,
+    aa_probs: np.ndarray,
+    atom_probs: np.ndarray,
+    ss_probs: np.ndarray,
+) -> np.ndarray:
+    """
+    Compute DAQ log-ratio scores for PDB version.
+    Reference distributions are computed from ALL points (all heavy atoms).
+
+    Parameters
+    ----------
+    points : np.ndarray
+        Point coordinates (N, 3)
+    aa_probs : np.ndarray
+        Amino acid probabilities (N, 20)
+    atom_probs : np.ndarray
+        Atom type probabilities (N, 6)
+    ss_probs : np.ndarray
+        Secondary structure probabilities (N, 3)
+
+    Returns
+    -------
+    np.ndarray
+        Combined scores array (N, 32): [xyz(3), aa_log(20), atom_log(6), ss_log(3)]
+    """
+    eps = 1e-12
+
+    # Compute reference distributions from ALL points (all heavy atoms are valid)
+    ref_aa = np.clip(aa_probs.mean(axis=0), eps, 1.0)
+    ref_atom = np.clip(atom_probs.mean(axis=0), eps, 1.0)
+    ref_ss = np.clip(ss_probs.mean(axis=0), eps, 1.0)
+
+    # Compute log-ratio scores
+    aa_log = np.log(np.clip(aa_probs, eps, 1.0) / ref_aa[None, :]).astype(np.float32)
+    atom_log = np.log(np.clip(atom_probs, eps, 1.0) / ref_atom[None, :]).astype(np.float32)
+    ss_log = np.log(np.clip(ss_probs, eps, 1.0) / ref_ss[None, :]).astype(np.float32)
+
+    # Concatenate: [xyz(3), aa(20), atom(6), ss(3)] = 32 columns
+    scores = np.concatenate(
+        [
+            points.astype(np.float32),
+            aa_log,
+            atom_log,
+            ss_log,
+        ],
+        axis=1,
+    )
+
+    return scores
+
+
+def compute_daq_scores_pdb(
+    session,
+    map_input,
+    structure,
+    output_path: Optional[Union[str, Path]] = None,
+    batch_size: int = 512,
+    model_path: Optional[str] = None,
+    progress_callback: Optional[callable] = None,
+) -> Tuple[np.ndarray, np.ndarray, Optional[Path]]:
+    """
+    Compute DAQ scores for PDB structure (heavy atom positions).
+
+    This version extracts patches at heavy atom coordinates from the structure
+    instead of grid points from the map.
+
+    Parameters
+    ----------
+    session : chimerax.core.session.Session
+        ChimeraX session
+    map_input : str, Path, or chimerax.map.Volume
+        Path to input MRC/MAP file OR a ChimeraX Volume object
+    structure : chimerax.atomic.Structure
+        Structure model whose heavy atom coordinates will be used
+    output_path : str or Path, optional
+        Path to save output NPY file
+    batch_size : int
+        Batch size for inference (default: 512)
+    model_path : str, optional
+        Path to ONNX model (uses bundled model if None)
+    progress_callback : callable, optional
+        Progress callback function(current, total, message)
+
+    Returns
+    -------
+    tuple
+        (points, scores, actual_output_path) where scores is (N, 32) array
+        and actual_output_path is the Path where the file was saved (or None if not saved)
+    """
+
+    def update_progress(current, total, msg=""):
+        if progress_callback:
+            progress_callback(current, total, msg)
+        else:
+            session.logger.status(f"{msg} ({current}/{total})")
+
+    # Step 1: Unify and resample volume
+    update_progress(0, 6, "Unifying and resampling volume...")
+
+    # Unify map first if needed
+    if isinstance(map_input, (str, Path)):
+        map_input_unified = unify_map_if_needed(str(map_input))
+    else:
+        map_input_unified = map_input
+
+    # Then resample
+    vol = resize_map_to_1a(session, map_input_unified)
+
+    # Step 2: Get volume data
+    update_progress(1, 6, "Extracting volume data...")
+    data = vol.data.matrix()  # (Z, Y, X) numpy array
+    origin = vol.data.origin  # (x, y, z)
+    step = vol.data.step  # Should be ~(1, 1, 1) after resample
+
+    # Normalize volume
+    data_norm = normalize_volume(data)
+
+    # Step 3: Extract heavy atom coordinates from structure
+    update_progress(2, 6, "Extracting heavy atom coordinates...")
+    points = get_heavy_atom_coords(structure)
+
+    n_points = points.shape[0]
+    session.logger.info(f"Extracted {n_points} heavy atom coordinates from structure")
+
+    if n_points == 0:
+        session.logger.warning("No heavy atoms found in structure!")
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 32), dtype=np.float32), None
+
+    # Step 4: Extract patches at heavy atom positions
+    update_progress(3, 6, f"Extracting {n_points} patches...")
+    patches = extract_patches(data_norm, points, origin, step, patch_size=11)
+
+    # Step 5: Run ONNX inference
+    update_progress(4, 6, "Loading model and running inference...")
+    model = load_model(model_path)
+
+    session.logger.info(f"Running inference on {n_points} patches...")
+
+    def inference_progress(current, total):
+        update_progress(4, 6, f"Inference: {current}/{total} patches")
+
+    aa_probs, atom_probs, ss_probs = model.predict_batched(patches, batch_size=batch_size, progress_callback=inference_progress)
+
+    # Step 6: Compute log-ratio scores (PDB version uses all points for reference)
+    update_progress(5, 6, "Computing DAQ scores...")
+    scores = compute_log_ratio_scores_pdb(points, aa_probs, atom_probs, ss_probs)
 
     # Save results if output path provided
     actual_output_path = None
