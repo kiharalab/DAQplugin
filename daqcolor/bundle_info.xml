@@ -1,4 +1,4 @@
-<BundleInfo name="ChimeraX-daqplugin"
+<BundleInfo name="ChimeraX-DAQplugin"
             version="0.12.0" package="chimerax.daqcolor"
             minSessionVersion="1" maxSessionVersion="1">
 
