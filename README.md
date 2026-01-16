@@ -9,6 +9,10 @@ This repository provides:
 - Command-line utilities for processing and file export
 
 DAQ is included as a Git submodule to ensure consistency with published methods.
+
+If you use DAQplugin, please cite the following paper:
+- Terashi, G., Wang, X., Maddhuri Venkata Subramaniya, S. R., Tesmer, J. J., & Kihara, D. (2022). Residue-wise local quality estimation for protein models from cryo-EM maps. Nature methods, 19(9), 1116-1125. [Link](https://www.nature.com/articles/s41592-022-01574-4)
+
 ---
 ## DAQ score monitoring (7jsn version 1.1 and EMD-22458)
 <img src="img/demo.gif" width="600">
