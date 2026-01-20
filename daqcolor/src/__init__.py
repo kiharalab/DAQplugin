@@ -10,6 +10,23 @@ from chimerax.core.toolshed import BundleAPI
 class _API(BundleAPI):
     api_version = 1
 
+    #GUI tool
+    @staticmethod
+    def start_tool(session, bi, ti):
+        # ti.name in bundle_info.xml
+        if ti.name == "DAQplugin":
+            from .tool import DAQTool  # GUI ToolInstance
+            return DAQTool(session, ti.name)
+
+        raise ValueError(f"Unknown tool: {ti.name}")
+    
+    @staticmethod
+    def get_class(class_name):
+        if class_name == "DAQTool":
+            from .tool import DAQTool
+            return DAQTool
+        raise ValueError(f"Unknown class name '{class_name}'")
+    
     @staticmethod
     def register_command(bi, ci, logger):
         from . import cmd
