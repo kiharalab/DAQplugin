@@ -5,7 +5,8 @@ from chimerax.core.commands import run
 
 from Qt.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QDoubleSpinBox,
-    QSpinBox, QPushButton, QCheckBox, QGroupBox, QFileDialog, QComboBox
+    QSpinBox, QPushButton, QCheckBox, QGroupBox, QFileDialog, QComboBox,
+    QToolButton, QFrame, QSizePolicy, QMessageBox
 )
 
 from Qt.QtWidgets import QWidget, QToolButton, QVBoxLayout, QHBoxLayout, QFrame, QSizePolicy
@@ -100,18 +101,13 @@ class DAQTool(ToolInstance):
 
     def _map_input_token(self):
         """
-        map_input is Or(MapArg, OpenFileNameArg).
-        Prefer loaded volume if selected; otherwise use file path.
+        Use only a loaded ChimeraX Volume model as map_input.
+        Returns '#<id>' string or None if not selected.
         """
         vol = self._selected_volume()
-        path = self.map_path_edit.text().strip()
-
-        if vol is not None:
-            return f"#{vol.id_string}"
-        if path:
-            # quote to survive spaces
-            return f"\"{path}\""
-        return None
+        if vol is None:
+            return None
+        return f"#{vol.id_string}"
 
     def _structure_token_or_none(self):
         st = self._selected_structure()
@@ -130,6 +126,43 @@ class DAQTool(ToolInstance):
             return f" {key} " + (f"\"{v}\"" if quote else v)
         return f" {key} {value}"
 
+    # ---------------- Requirements / warnings ----------------
+    def _require_map_and_npy(self, context: str) -> bool:
+        """
+        Enforce: Map & NPY path must always be specified.
+        (Requirement #1)
+        """
+        map_tok = self._map_input_token()
+        if map_tok is None:
+            self.session.logger.error(f"{context}: Map must be selected (loaded Volume).")
+            return False
+        npy = self.output_edit.text().strip()
+        if not npy:
+            self.session.logger.error(f"{context}: Output/Input NPY path must be specified.")
+            return False
+        return True
+    
+    def _warn_overwrite_if_exists(self, path: str, title="Overwrite existing file?") -> bool:
+        """
+        If path exists, warn and ask user to proceed.
+        (Requirement #2 for compute_grid)
+        """
+        try:
+            exists = os.path.exists(path)
+        except Exception:
+            exists = False
+        if not exists:
+            return True
+
+        msg = QMessageBox(self.tool_window.ui_area)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle(title)
+        msg.setText("The specified NPY file already exists.\nDo you want to overwrite it?")
+        msg.setInformativeText(path)
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg.setDefaultButton(QMessageBox.No)
+        return msg.exec() == QMessageBox.Yes
+
     # ---------------- Build UI ----------------
     def _build_ui(self):
         parent = self.tool_window.ui_area
@@ -137,7 +170,7 @@ class DAQTool(ToolInstance):
         main = QVBoxLayout(root)
 
         # ---- Model / Map selection ----
-        box_sel = QGroupBox("Inputs (Loaded models or files)", root)
+        box_sel = QGroupBox("Inputs (Loaded model/Map/NPY files)", root)
         lay_sel = QVBoxLayout(box_sel)
 
         row = QHBoxLayout()
@@ -145,20 +178,23 @@ class DAQTool(ToolInstance):
         self.structure_combo = QComboBox(root)
         row.addWidget(self.structure_combo, 1)
 
-        row.addWidget(QLabel("Loaded map:", root))
+        row.addWidget(QLabel("Map:", root))
         self.volume_combo = QComboBox(root)
         row.addWidget(self.volume_combo, 1)
 
-
-
-
+        btn_refresh = QPushButton("Refresh", root)
+        btn_refresh.clicked.connect(self._refresh_models)
+        row.addWidget(btn_refresh)
         lay_sel.addLayout(row)
 
-
-
-        btn_refresh = QPushButton("Refresh model list", root)
-        btn_refresh.clicked.connect(self._refresh_models)
-        lay_sel.addWidget(btn_refresh)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Output/Input NPY:", root))
+        self.output_edit = QLineEdit(root)
+        btn_out = QPushButton("Browse", root)
+        btn_out.clicked.connect(lambda: self._browse_save_file(self.output_edit, "Save NPY"))
+        row.addWidget(self.output_edit, 1)
+        row.addWidget(btn_out)
+        lay_sel.addLayout(row)
 
         main.addWidget(box_sel)
 
@@ -174,15 +210,8 @@ class DAQTool(ToolInstance):
             "atom_score",  # DAQ(CA)
         ])
         self.metric_combo.setCurrentText("aa_score")
-
         row.addWidget(self.metric_combo, 1)
-        lay_opt.addLayout(row)
-
-        # Optional section (collapsed by default)
-        #opt_common = CollapsibleSection("Optional (output / ckpt)", root, expanded=False)
-        #lay_opt.addWidget(opt_common)
-
-        row = QHBoxLayout()
+ 
         row.addWidget(QLabel("k:", root))
         self.k_spin = QSpinBox(root); self.k_spin.setRange(1, 64); self.k_spin.setValue(1)
         row.addWidget(self.k_spin)
@@ -193,25 +222,6 @@ class DAQTool(ToolInstance):
         self.bs_spin = QSpinBox(root); self.bs_spin.setRange(1, 100000); self.bs_spin.setValue(512)
         row.addWidget(self.bs_spin)
         lay_opt.addLayout(row)
-
-        row = QHBoxLayout()
-        row.addWidget(QLabel("output NPY (optional):", root))
-        self.output_edit = QLineEdit(root)
-        btn_out = QPushButton("Browse", root)
-        btn_out.clicked.connect(lambda: self._browse_save_file(self.output_edit, "Save NPY"))
-        row.addWidget(self.output_edit, 1)
-        row.addWidget(btn_out)
-        lay_sel.addLayout(row)
-
-        #row = QHBoxLayout()
-        #row.addWidget(QLabel("ckpt (optional):", root))
-        #self.ckpt_edit = QLineEdit(root)
-        #btn_ckpt = QPushButton("Browse", root)
-        #btn_ckpt.clicked.connect(lambda: self._browse_open_file(self.ckpt_edit, "Select ONNX checkpoint"))
-        #row.addWidget(self.ckpt_edit, 1)
-        #row.addWidget(btn_ckpt)
-        #lay_sel.addLayout(row)
-
         main.addWidget(box_opt)
 
         # ---- GRID mode ----
@@ -230,12 +240,6 @@ class DAQTool(ToolInstance):
         row.addWidget(self.mp_spin)
         lay_grid.addLayout(row)
 
-        row = QHBoxLayout()
-        self.monitor_chk = QCheckBox("monitor", root)
-        self.monitor_chk.setChecked(False)
-        row.addWidget(self.monitor_chk)
-        row.addStretch(1)
-        lay_grid.addLayout(row)
 
         btn_grid = QPushButton("Run compute_grid", root)
         btn_grid.clicked.connect(self._run_compute_grid)
@@ -253,15 +257,6 @@ class DAQTool(ToolInstance):
         row.addStretch(1)
         lay_pdb.addLayout(row)
 
-        row = QHBoxLayout()
-        row.addWidget(QLabel("save_model (optional):", root))
-        self.save_model_edit = QLineEdit(root)
-        btn_save_model = QPushButton("Browse", root)
-        btn_save_model.clicked.connect(lambda: self._browse_save_file(self.save_model_edit, "Save scored model (PDB/CIF)"))
-        row.addWidget(self.save_model_edit, 1)
-        row.addWidget(btn_save_model)
-        lay_pdb.addLayout(row)
-
         btn_pdb = QPushButton("Run compute_pdb", root)
         btn_pdb.clicked.connect(self._run_compute_pdb)
         lay_pdb.addWidget(btn_pdb)
@@ -273,13 +268,14 @@ class DAQTool(ToolInstance):
         lay_col = QVBoxLayout(box_col)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("npy_path:", root))
-        self.npy_edit = QLineEdit(root)
-        btn_npy = QPushButton("Browse", root)
-        btn_npy.clicked.connect(lambda: self._browse_open_file(self.npy_edit, "Select NPY (N×32)"))
-        row.addWidget(self.npy_edit, 1)
-        row.addWidget(btn_npy)
+        row.addWidget(QLabel("npy_path (from Inputs):", root))
+        self.npy_use_edit = QLineEdit(root)
+        self.npy_use_edit.setReadOnly(True)
+        self.npy_use_edit.setPlaceholderText("Use 'Output/Input NPY' specified above")
+        row.addWidget(self.npy_use_edit, 1)
         lay_col.addLayout(row)
+
+        self.output_edit.textChanged.connect(self.npy_use_edit.setText)
 
         # clamp defaults: -1.0 .. 1.0
         row = QHBoxLayout()
@@ -291,39 +287,29 @@ class DAQTool(ToolInstance):
         row.addWidget(self.cmax_edit)
         lay_col.addLayout(row)
 
-        # Optional: monitor
-        #opt_col = CollapsibleSection("Optional (monitor)", root, expanded=False)
-        #lay_col.addWidget(opt_col)
-
+        # Monitor interval
         row = QHBoxLayout()
-        self.color_monitor_chk = QCheckBox("monitor (daqcolor monitor)", root)
-        self.color_monitor_chk.setChecked(False)
-        row.addWidget(self.color_monitor_chk)
-        #row.addStretch(1)
-        #lay_col.addLayout(row)
-
-        #row = QHBoxLayout()
         row.addWidget(QLabel("interval (sec):", root))
         self.color_monitor_interval = QDoubleSpinBox(root)
         self.color_monitor_interval.setDecimals(2)
         self.color_monitor_interval.setRange(0.05, 10.0)
         self.color_monitor_interval.setValue(0.50)
         row.addWidget(self.color_monitor_interval)
-        #row.addStretch(1)
         lay_col.addLayout(row)
 
         # Buttons
-        btn_color = QPushButton("Apply coloring", root)
-        btn_color.clicked.connect(self._run_color_apply)
-        lay_col.addWidget(btn_color)
+        # Buttons: Requirement #5 (Apply, Monitor, Stop Monitor)
+        btn_apply = QPushButton("Apply coloring", root)
+        btn_apply.clicked.connect(self._run_color_apply)
+        lay_col.addWidget(btn_apply)
 
-        btn_monitor = QPushButton("Apply + Monitor (toggle)", root)
-        btn_monitor.clicked.connect(self._run_color_monitor_toggle)
-        lay_col.addWidget(btn_monitor)
+        btn_start = QPushButton("Start monitor", root)
+        btn_start.clicked.connect(lambda: self._run_color_monitor(on=True))
+        lay_col.addWidget(btn_start)
 
-        btn_clear = QPushButton("Clear point models (daqcolor clear)", root)
-        btn_clear.clicked.connect(lambda: run(self.session, "daqcolor clear"))
-        lay_col.addWidget(btn_clear)
+        btn_stop = QPushButton("Stop monitor", root)
+        btn_stop.clicked.connect(lambda: self._run_color_monitor(on=False))
+        lay_col.addWidget(btn_stop)
 
         main.addWidget(box_col)
 
@@ -334,10 +320,19 @@ class DAQTool(ToolInstance):
 
         # initial refresh
         self._refresh_models()
+        self.npy_use_edit.setText(self.output_edit.text())
 
     # ---------------- Command runners ----------------
     def _run_compute_grid(self):
+        if not self._require_map_and_npy("compute_grid"):
+            return
         map_tok = self._map_input_token()
+        outp = self.output_edit.text().strip()
+
+        if not self._warn_overwrite_if_exists(outp, title="Overwrite NPY from compute_grid?"):
+            self.session.logger.info("compute_grid canceled by user (overwrite declined).")
+            return
+        
         if map_tok is None:
             self.session.logger.error("Select a loaded map or specify a map file path.")
             return
@@ -357,7 +352,7 @@ class DAQTool(ToolInstance):
         cmd += f" k {int(self.k_spin.value())}"
         cmd += f" half_window {int(self.hw_spin.value())}"
 
-        metric = self.metric_edit.text().strip()
+        metric = self.metric_combo.currentText().strip()
         if metric:
             cmd += f" metric \"{metric}\""
 
@@ -365,16 +360,13 @@ class DAQTool(ToolInstance):
         if outp:
             cmd += f" output \"{outp}\""
 
-        ckpt = self.ckpt_edit.text().strip()
-        if ckpt:
-            cmd += f" ckpt \"{ckpt}\""
-
-        cmd += f" monitor {str(bool(self.monitor_chk.isChecked())).lower()}"
-
         self.session.logger.info(f"Running: {cmd}")
         run(self.session, cmd)
 
     def _run_compute_pdb(self):
+        if not self._require_map_and_npy("compute_pdb"):
+            return
+        
         map_tok = self._map_input_token()
         if map_tok is None:
             self.session.logger.error("Select a loaded map or specify a map file path.")
@@ -391,17 +383,13 @@ class DAQTool(ToolInstance):
         cmd += f" k {int(self.k_spin.value())}"
         cmd += f" half_window {int(self.hw_spin.value())}"
 
-        metric = self.metric_edit.text().strip()
+        metric = self.metric_combo.currentText().strip()
         if metric:
             cmd += f" metric \"{metric}\""
 
-        outp = self.output_edit.text().strip()
-        if outp:
-            cmd += f" output \"{outp}\""
-
-        ckpt = self.ckpt_edit.text().strip()
-        if ckpt:
-            cmd += f" ckpt \"{ckpt}\""
+        #outp = self.output_edit.text().strip()
+        #if outp:
+        #    cmd += f" output \"{outp}\""
 
         cmd += f" apply_color {str(bool(self.apply_color_chk.isChecked())).lower()}"
 
@@ -418,7 +406,11 @@ class DAQTool(ToolInstance):
             self.session.logger.error("Select a Structure to color.")
             return
 
-        npy = self.npy_edit.text().strip()
+        if not self._require_map_and_npy("daqcolor apply"):
+            return
+        
+        npy = self.output_edit.text().strip()
+        
         if not npy:
             self.session.logger.error("Specify npy_path.")
             return
@@ -427,13 +419,14 @@ class DAQTool(ToolInstance):
         cmd += f" k {int(self.k_spin.value())}"
         cmd += f" half_window {int(self.hw_spin.value())}"
 
-        metric = self.metric_edit.text().strip()
+        metric = self.metric_combo.currentText().strip()
         if metric:
             cmd += f" metric \"{metric}\""
 
         # optional clamp
         cmin = self.cmin_edit.text().strip()
         cmax = self.cmax_edit.text().strip()
+
         if cmin:
             cmd += f" clamp_min {float(cmin)}"
         if cmax:
@@ -442,24 +435,23 @@ class DAQTool(ToolInstance):
         self.session.logger.info(f"Running: {cmd}")
         run(self.session, cmd)
 
-    def _run_color_monitor_toggle(self):
+    def _run_color_monitor(self, on: bool):
+        # Requirement #3: Structure must be selected in Inputs
         st_tok = self._structure_token_or_none()
         if st_tok is None:
-            self.session.logger.error("Select a Structure to color/monitor.")
+            self.session.logger.error("Color-only monitor requires a Structure (select in Inputs).")
             return
 
-        npy = self.npy_edit.text().strip()
-        if not npy:
-            self.session.logger.error("Specify npy_path.")
+        # Requirement #1: Map & NPY are mandatory (use NPY from Inputs)
+        if not self._require_map_and_npy("daqcolor monitor"):
             return
+        npy = self.output_edit.text().strip()
 
-        # on/off
-        on = bool(self.color_monitor_chk.isChecked())
         interval = float(self.color_monitor_interval.value())
 
         cmd = f"daqcolor monitor {st_tok}"
 
-        # turning on requires npy_path in your cmd.py
+        # turning on requires npy_path
         if on:
             cmd += f" npy_path \"{npy}\""
         cmd += f" on {str(on).lower()}"
@@ -469,12 +461,17 @@ class DAQTool(ToolInstance):
         cmd += f" k {int(self.k_spin.value())}"
         cmd += f" half_window {int(self.hw_spin.value())}"
 
-        metric = self.metric_combo.currentText() if hasattr(self, "metric_combo") else ""
+        metric = self.metric_combo.currentText().strip()
         if metric:
             cmd += f" metric \"{metric}\""
 
-        # NOTE: daqcolor_monitor currently does not accept clamp_min/max in your cmd.py
-        # so we do not pass clamp_* here.
+        # optional clamp (apply only)
+        cmin = self.cmin_edit.text().strip()
+        cmax = self.cmax_edit.text().strip()
+        if cmin:
+            cmd += f" clamp_min {float(cmin)}"
+        if cmax:
+            cmd += f" clamp_max {float(cmax)}"
 
         self.session.logger.info(f"Running: {cmd}")
         run(self.session, cmd)

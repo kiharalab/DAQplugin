@@ -302,7 +302,8 @@ daqcolor_apply_desc = CmdDesc(
 )
 
 def daqcolor_monitor(session, model, *, npy_path=None, k=1, colormap=None,
-                     metric="aa_score", atom_name="CA", half_window=9, on=True, interval=0.5):
+                     metric="aa_score", atom_name="CA", 
+                     clamp_min=None, clamp_max=None, half_window=9, on=True, interval=0.5):
     key = (session, model.id_string)
     if on:
         if npy_path is None:
@@ -314,7 +315,7 @@ def daqcolor_monitor(session, model, *, npy_path=None, k=1, colormap=None,
             session.triggers.remove_handler(existing["handler"])
             session.logger.info("daqcolor monitor: replacing existing monitor")
 
-        _recolor(session, model, npy_path, k, colormap, metric, atom_name, None, None, halfwindow=half_window)
+        _recolor(session, model, npy_path, k, colormap, metric, atom_name, clamp_min, clamp_max, halfwindow=half_window)
 
         import time
         last_update = [time.time()]  # Use list to allow modification in nested function
@@ -333,7 +334,7 @@ def daqcolor_monitor(session, model, *, npy_path=None, k=1, colormap=None,
                 # Throttle updates based on interval
                 current_time = time.time()
                 if current_time - last_update[0] >= interval:
-                    _recolor(session, model, npy_path, k, colormap, metric, atom_name, None, None, halfwindow=half_window)
+                    _recolor(session, model, npy_path, k, colormap, metric, atom_name, clamp_min, clamp_max, halfwindow=half_window)
                     last_update[0] = current_time
             except Exception as e:
                 session.logger.warning(f"daqcolor monitor error: {e}")
@@ -349,8 +350,16 @@ def daqcolor_monitor(session, model, *, npy_path=None, k=1, colormap=None,
 
 daqcolor_monitor_desc = CmdDesc(
     required=[("model", ModelArg)],
-    keyword=[("npy_path", StringArg), ("k", IntArg), ("colormap", ColormapArg),
-             ("metric", StringArg), ("atom_name", StringArg),("half_window", IntArg), ("on", BoolArg), ("interval", FloatArg)],
+    keyword=[("npy_path", StringArg), 
+             ("k", IntArg), 
+             ("colormap", ColormapArg),
+             ("metric", StringArg), 
+             ("atom_name", StringArg),
+             ("clamp_min", FloatArg), ("clamp_max", FloatArg),
+             ("half_window", IntArg), 
+             ("on", BoolArg), 
+             ("interval", FloatArg)
+             ],
     synopsis="Start/stop live recoloring with throttling. interval (default 0.5s) controls update frequency. Use 'on false' to stop monitoring."
 )
 
