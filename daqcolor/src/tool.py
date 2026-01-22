@@ -389,15 +389,16 @@ class DAQTool(ToolInstance):
         if metric:
             cmd += f" metric \"{metric}\""
 
-        #outp = self.output_edit.text().strip()
-        #if outp:
-        #    cmd += f" output \"{outp}\""
+        outp = self.output_edit.text().strip()
+        if outp:
+            cmd += f" output \"{outp}\""
 
         cmd += f" apply_color {str(bool(self.apply_color_chk.isChecked())).lower()}"
 
-        save_model = self.save_model_edit.text().strip()
-        if save_model:
-            cmd += f" save_model \"{save_model}\""
+        #no save
+        #save_model = self.save_model_edit.text().strip()
+        #if save_model:
+        #    cmd += f" save_model \"{save_model}\""
 
         self.session.logger.info(f"Running: {cmd}")
         run(self.session, cmd)
