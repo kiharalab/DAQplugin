@@ -330,7 +330,7 @@ class DAQTool(ToolInstance):
         main.addWidget(box_opt)
 
         # ---- GRID mode ----
-        box_grid = QGroupBox("Compute: daqscore compute_grid", root)
+        box_grid = QGroupBox("Compute: Grid-based DAQ score computation", root)
         lay_grid = QVBoxLayout(box_grid)
 
         row = QHBoxLayout()
@@ -386,7 +386,7 @@ class DAQTool(ToolInstance):
         
 
         # ---- Color-only ----
-        box_col = QGroupBox("Color only: daqcolor apply/monitor (use existing NPY)", root)
+        box_col = QGroupBox("Color only: Coloring/Monitoring with existing NPY scores", root)
         lay_col = QVBoxLayout(box_col)
 
         row = QHBoxLayout()
@@ -473,7 +473,7 @@ class DAQTool(ToolInstance):
         main.addWidget(box_col)
 
         # ---- PDB mode ----
-        box_pdb = QGroupBox("Compute: daqscore compute_pdb (Original DAQ style)", root)
+        box_pdb = QGroupBox("Compute: Structure-based DAQ score computation (Original DAQ style)", root)
         lay_pdb = QVBoxLayout(box_pdb)
 
         btn_pdb = QPushButton("Run Structure-based DAQ score computation", root)

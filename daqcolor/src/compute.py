@@ -123,8 +123,14 @@ def resize_map_to_1a(session, map_path_or_volume, close_original: bool = False):
 
     session.logger.info(f"Resampling volume from voxel size {step} to 1 Å...")
 
+    # Save the original volume's id before resampling
+    original_vol_id = vol.id_string
+
     # Resample to 1 Angstrom grid spacing
     run(session, f"volume resample #{vol.id_string} spacing 1")
+
+    # Show the original volume (resample command hides it by default)
+    run(session, f"show #{original_vol_id}")
 
     # Get the resampled volume (created as the most recent model)
     resampled = None
