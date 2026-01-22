@@ -62,7 +62,23 @@ class DAQTool(ToolInstance):
 
         self._build_ui()
         
+        # Set up auto-refresh handlers for model changes
+        self._model_add_handler = session.triggers.add_handler('add models', self._on_models_changed)
+        self._model_remove_handler = session.triggers.add_handler('remove models', self._on_models_changed)
+        
         self.tool_window.manage(None)
+
+    def delete(self):
+        """Clean up handlers when tool is closed."""
+        if hasattr(self, '_model_add_handler'):
+            self.session.triggers.remove_handler(self._model_add_handler)
+        if hasattr(self, '_model_remove_handler'):
+            self.session.triggers.remove_handler(self._model_remove_handler)
+        super().delete()
+
+    def _on_models_changed(self, trigger_name, data):
+        """Called when models are added or removed."""
+        self._refresh_models()
 
     # ---------------- UI helpers ----------------
     def _browse_open_file(self, line_edit, title="Select file"):
@@ -77,6 +93,10 @@ class DAQTool(ToolInstance):
 
     def _refresh_models(self):
         """Populate structure and volume combos from session models."""
+        # Save current selections
+        current_structure = self.structure_combo.currentData()
+        current_volume = self.volume_combo.currentData()
+        
         self.structure_combo.clear()
         self.volume_combo.clear()
 
@@ -90,11 +110,24 @@ class DAQTool(ToolInstance):
         except Exception:
             Volume = None
 
+        structure_index = -1
+        volume_index = -1
+        
         for m in self.session.models.list():
             if Structure is not None and isinstance(m, Structure):
                 self.structure_combo.addItem(f"#{m.id_string} {m.name}", m)
+                if m == current_structure:
+                    structure_index = self.structure_combo.count() - 1
             if Volume is not None and isinstance(m, Volume):
                 self.volume_combo.addItem(f"#{m.id_string} {m.name}", m)
+                if m == current_volume:
+                    volume_index = self.volume_combo.count() - 1
+        
+        # Restore selections if models still exist
+        if structure_index >= 0:
+            self.structure_combo.setCurrentIndex(structure_index)
+        if volume_index >= 0:
+            self.volume_combo.setCurrentIndex(volume_index)
 
     def _selected_structure(self):
         return self.structure_combo.currentData()
@@ -141,7 +174,7 @@ class DAQTool(ToolInstance):
             return False
         npy = self.output_edit.text().strip()
         if not npy:
-            self.session.logger.error(f"{context}: Output/Input NPY path must be specified.")
+            self.session.logger.error(f"{context}: Output/Load Existing NPY path must be specified.")
             return False
         return True
     
@@ -240,29 +273,40 @@ class DAQTool(ToolInstance):
         link_row.addStretch(1)
         main.addLayout(link_row)
 
+        # ==============================
+        # Hint about tooltips
+        # ==============================
+        hint_label = QLabel("<i>Hover over parameter labels and buttons to see detailed information</i>", root)
+        hint_label.setStyleSheet("color: #666; padding: 5px;")
+        main.addWidget(hint_label)
+
         
         # ---- Model / Map selection ----
         box_sel = QGroupBox("Inputs (Loaded model/Map/NPY files)", root)
         lay_sel = QVBoxLayout(box_sel)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("Structure:", root))
+        structure_label = QLabel("Structure:", root)
+        structure_label.setToolTip("Select the atomic structure model to evaluate")
+        row.addWidget(structure_label)
         self.structure_combo = QComboBox(root)
         row.addWidget(self.structure_combo, 1)
 
-        row.addWidget(QLabel("Map:", root))
+        map_label = QLabel("Map:", root)
+        map_label.setToolTip("Select the cryo-EM density map (volume) for evaluation")
+        row.addWidget(map_label)
         self.volume_combo = QComboBox(root)
         row.addWidget(self.volume_combo, 1)
 
-        btn_refresh = QPushButton("Refresh", root)
-        btn_refresh.clicked.connect(self._refresh_models)
-        row.addWidget(btn_refresh)
         lay_sel.addLayout(row)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("Output/Input NPY:", root))
+        npy_label = QLabel("Output/Load Existing NPY:", root)
+        npy_label.setToolTip("Path to save computed scores or load existing scores from NPY file")
+        row.addWidget(npy_label)
         self.output_edit = QLineEdit(root)
         btn_out = QPushButton("Browse", root)
+        btn_out.setToolTip("Browse for NPY file location")
         btn_out.clicked.connect(lambda: self._browse_save_file(self.output_edit, "Save NPY"))
         row.addWidget(self.output_edit, 1)
         row.addWidget(btn_out)
@@ -271,27 +315,14 @@ class DAQTool(ToolInstance):
         main.addWidget(box_sel)
         
 
-        # ---- Common options ----
-        box_opt = QGroupBox("Common options", root)
+        # ---- Compute options ----
+        box_opt = QGroupBox("Compute options", root)
         lay_opt = QVBoxLayout(box_opt)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("metric:", root))
-        self.metric_combo = QComboBox(root)
-        self.metric_combo.addItems([
-            "aa_score",    # DAQ(AA)
-            "atom_score",  # DAQ(CA)
-        ])
-        self.metric_combo.setCurrentText("aa_score")
-        row.addWidget(self.metric_combo, 1)
- 
-        row.addWidget(QLabel("k:", root))
-        self.k_spin = QSpinBox(root); self.k_spin.setRange(1, 64); self.k_spin.setValue(1)
-        row.addWidget(self.k_spin)
-        row.addWidget(QLabel("half_window:", root))
-        self.hw_spin = QSpinBox(root); self.hw_spin.setRange(0, 20); self.hw_spin.setValue(9)
-        row.addWidget(self.hw_spin)
-        row.addWidget(QLabel("batch_size:", root))
+        batch_label = QLabel("batch_size:", root)
+        batch_label.setToolTip("Number of samples processed in each batch (affects memory usage and speed)")
+        row.addWidget(batch_label)
         self.bs_spin = QSpinBox(root); self.bs_spin.setRange(1, 100000); self.bs_spin.setValue(512)
         row.addWidget(self.bs_spin)
         lay_opt.addLayout(row)
@@ -302,7 +333,9 @@ class DAQTool(ToolInstance):
         lay_grid = QVBoxLayout(box_grid)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("contour:", root))
+        contour_label = QLabel("contour:", root)
+        contour_label.setToolTip("Density threshold for grid sampling (auto-syncs with map display)")
+        row.addWidget(contour_label)
         self.contour_spin = QDoubleSpinBox(root); 
         self.contour_spin.setDecimals(4); 
         self.contour_spin.setRange(-1e9, 1e9); 
@@ -310,10 +343,14 @@ class DAQTool(ToolInstance):
 
 
         row.addWidget(self.contour_spin)
-        row.addWidget(QLabel("stride:", root))
+        stride_label = QLabel("stride:", root)
+        stride_label.setToolTip("Sampling interval for grid points (larger = faster but coarser)")
+        row.addWidget(stride_label)
         self.stride_spin = QSpinBox(root); self.stride_spin.setRange(1, 50); self.stride_spin.setValue(2)
         row.addWidget(self.stride_spin)
-        row.addWidget(QLabel("max_points:", root))
+        max_points_label = QLabel("max_points:", root)
+        max_points_label.setToolTip("Maximum number of grid points to evaluate (limits computation time)")
+        row.addWidget(max_points_label)
         self.mp_spin = QSpinBox(root); self.mp_spin.setRange(1000, 100000000); self.mp_spin.setValue(500000)
         row.addWidget(self.mp_spin)
         lay_grid.addLayout(row)
@@ -338,7 +375,8 @@ class DAQTool(ToolInstance):
         # ----
 
 
-        btn_grid = QPushButton("Run compute_grid", root)
+        btn_grid = QPushButton("Run Grid-based DAQ score computation", root)
+        btn_grid.setToolTip("Compute DAQ scores on a 3D grid of points around the structure")
         btn_grid.clicked.connect(self._run_compute_grid)
         lay_grid.addWidget(btn_grid)
 
@@ -351,28 +389,61 @@ class DAQTool(ToolInstance):
         lay_col = QVBoxLayout(box_col)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("npy_path (from Inputs):", root))
+        npy_use_label = QLabel("npy_path (from Inputs):", root)
+        npy_use_label.setToolTip("Path to NPY file containing pre-computed Grid-based DAQ scores (automatically synced from above)")
+        row.addWidget(npy_use_label)
         self.npy_use_edit = QLineEdit(root)
         self.npy_use_edit.setReadOnly(True)
-        self.npy_use_edit.setPlaceholderText("Use 'Output/Input NPY' specified above")
+        self.npy_use_edit.setPlaceholderText("Use 'Output/Load Existing NPY' specified above")
         row.addWidget(self.npy_use_edit, 1)
         lay_col.addLayout(row)
 
         self.output_edit.textChanged.connect(self.npy_use_edit.setText)
 
+        # metric, k, half_window options
+        row = QHBoxLayout()
+        metric_label = QLabel("metric:", root)
+        metric_label.setToolTip("Scoring metric: aa_score (Amino-acid-based) or atom_score (C-alpha Atom-based)")
+        row.addWidget(metric_label)
+        self.metric_combo = QComboBox(root)
+        self.metric_combo.addItems([
+            "aa_score",    # DAQ(AA)
+            "atom_score",  # DAQ(CA)
+        ])
+        self.metric_combo.setCurrentText("aa_score")
+        row.addWidget(self.metric_combo, 1)
+ 
+        k_label = QLabel("k:", root)
+        k_label.setToolTip("Number of nearest neighbors for kNN (k-nearest neighbors) local density evaluation")
+        row.addWidget(k_label)
+        self.k_spin = QSpinBox(root); self.k_spin.setRange(1, 64); self.k_spin.setValue(1)
+        row.addWidget(self.k_spin)
+        hw_label = QLabel("half_window:", root)
+        hw_label.setToolTip("Half-window size for local scoring context (residues on each side) for window averaging")
+        row.addWidget(hw_label)
+        self.hw_spin = QSpinBox(root); self.hw_spin.setRange(0, 20); self.hw_spin.setValue(9)
+        row.addWidget(self.hw_spin)
+        lay_col.addLayout(row)
+
         # clamp defaults: -1.0 .. 1.0
         row = QHBoxLayout()
-        row.addWidget(QLabel("clamp_min:", root))
+        cmin_label = QLabel("clamp_min:", root)
+        cmin_label.setToolTip("Minimum value for color scale clamping (scores below this value are mapped to blue)")
+        row.addWidget(cmin_label)
         self.cmin_edit = QLineEdit("-1.0", root)
         row.addWidget(self.cmin_edit)
-        row.addWidget(QLabel("clamp_max:", root))
+        cmax_label = QLabel("clamp_max:", root)
+        cmax_label.setToolTip("Maximum value for color scale clamping (scores above this value are mapped to red)")
+        row.addWidget(cmax_label)
         self.cmax_edit = QLineEdit("1.0", root)
         row.addWidget(self.cmax_edit)
         
 
         # Monitor interval
         
-        row.addWidget(QLabel("interval (sec):", root))
+        interval_label = QLabel("interval (sec):", root)
+        interval_label.setToolTip("Update interval for automatic monitoring (in seconds)")
+        row.addWidget(interval_label)
         self.color_monitor_interval = QDoubleSpinBox(root)
         self.color_monitor_interval.setDecimals(2)
         self.color_monitor_interval.setRange(0.05, 10.0)
@@ -383,14 +454,17 @@ class DAQTool(ToolInstance):
         # Buttons
         row = QHBoxLayout()
         btn_apply = QPushButton("Apply coloring", root)
+        btn_apply.setToolTip("Color the structure once using existing Grid-based DAQ scores from NPY file")
         btn_apply.clicked.connect(self._run_color_apply)
         row.addWidget(btn_apply)
 
         btn_start = QPushButton("Start monitor", root)
+        btn_start.setToolTip("Start automatic monitoring and coloring with specified update interval")
         btn_start.clicked.connect(lambda: self._run_color_monitor(on=True))
         row.addWidget(btn_start)
 
         btn_stop = QPushButton("Stop monitor", root)
+        btn_stop.setToolTip("Stop automatic monitoring and coloring")
         btn_stop.clicked.connect(lambda: self._run_color_monitor(on=False))
         row.addWidget(btn_stop)
         lay_col.addLayout(row)
@@ -398,10 +472,11 @@ class DAQTool(ToolInstance):
         main.addWidget(box_col)
 
         # ---- PDB mode ----
-        box_pdb = QGroupBox("Compute: daqscore compute_pdb (original DAQ style)", root)
+        box_pdb = QGroupBox("Compute: daqscore compute_pdb (Original DAQ style)", root)
         lay_pdb = QVBoxLayout(box_pdb)
 
-        btn_pdb = QPushButton("Run compute_pdb", root)
+        btn_pdb = QPushButton("Run Structure-based DAQ score computation", root)
+        btn_pdb.setToolTip("Compute DAQ scores for structure atoms and apply coloring (original DAQ method)")
         btn_pdb.clicked.connect(self._run_compute_pdb)
         lay_pdb.addWidget(btn_pdb)
 
