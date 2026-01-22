@@ -123,8 +123,14 @@ def resize_map_to_1a(session, map_path_or_volume, close_original: bool = False):
 
     session.logger.info(f"Resampling volume from voxel size {step} to 1 Å...")
 
+    # Save the original volume's id before resampling
+    original_vol_id = vol.id_string
+
     # Resample to 1 Angstrom grid spacing
     run(session, f"volume resample #{vol.id_string} spacing 1")
+
+    # Show the original volume (resample command hides it by default)
+    run(session, f"show #{original_vol_id}")
 
     # Get the resampled volume (created as the most recent model)
     resampled = None
@@ -514,14 +520,33 @@ def compute_daq_scores(
     else:
         map_input_unified = map_input
 
+    # Track volumes before resampling to detect if a new one is created
+    from chimerax.map import Volume
+    volumes_before = set(m for m in session.models.list() if isinstance(m, Volume))
+
     # Then resample
     vol = resize_map_to_1a(session, map_input_unified)
 
+    # Check if a new volume was created (resampling happened)
+    volumes_after = set(m for m in session.models.list() if isinstance(m, Volume))
+    new_volumes = volumes_after - volumes_before
+
     # Step 2: Get volume data
     update_progress(1, 6, "Extracting volume data...")
-    data = vol.data.matrix()  # (Z, Y, X) numpy array
+    data = vol.data.matrix().copy()  # (Z, Y, X) numpy array - copy to detach from volume
     origin = vol.data.origin  # (x, y, z)
     step = vol.data.step  # Should be ~(1, 1, 1) after resample
+
+    # Close only newly created resampled volume(s) to clean up ChimeraX GUI
+    # This keeps the original volume the user loaded/selected
+    for new_vol in new_volumes:
+        # Only delete if it's the volume we used AND has "resample" in name (safety check)
+        if new_vol is vol and "resample" in new_vol.name.lower():
+            try:
+                new_vol.delete()
+                session.logger.info("Cleaned up resampled volume from GUI")
+            except Exception:
+                pass  # Volume may already be closed or not deletable
 
     # Normalize volume
     data_norm = normalize_volume(data)
@@ -715,14 +740,33 @@ def compute_daq_scores_pdb(
     else:
         map_input_unified = map_input
 
+    # Track volumes before resampling to detect if a new one is created
+    from chimerax.map import Volume
+    volumes_before = set(m for m in session.models.list() if isinstance(m, Volume))
+
     # Then resample
     vol = resize_map_to_1a(session, map_input_unified)
 
+    # Check if a new volume was created (resampling happened)
+    volumes_after = set(m for m in session.models.list() if isinstance(m, Volume))
+    new_volumes = volumes_after - volumes_before
+
     # Step 2: Get volume data
     update_progress(1, 6, "Extracting volume data...")
-    data = vol.data.matrix()  # (Z, Y, X) numpy array
+    data = vol.data.matrix().copy()  # (Z, Y, X) numpy array - copy to detach from volume
     origin = vol.data.origin  # (x, y, z)
     step = vol.data.step  # Should be ~(1, 1, 1) after resample
+
+    # Close only newly created resampled volume(s) to clean up ChimeraX GUI
+    # This keeps the original volume the user loaded/selected
+    for new_vol in new_volumes:
+        # Only delete if it's the volume we used AND has "resample" in name (safety check)
+        if new_vol is vol and "resample" in new_vol.name.lower():
+            try:
+                new_vol.delete()
+                session.logger.info("Cleaned up resampled volume from GUI")
+            except Exception:
+                pass  # Volume may already be closed or not deletable
 
     # Normalize volume
     data_norm = normalize_volume(data)
