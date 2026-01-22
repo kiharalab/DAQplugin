@@ -247,21 +247,7 @@ class DAQTool(ToolInstance):
 
         main.addWidget(box_grid)
 
-        # ---- PDB mode ----
-        box_pdb = QGroupBox("Compute: daqscore compute_pdb", root)
-        lay_pdb = QVBoxLayout(box_pdb)
-
-        row = QHBoxLayout()
-        self.apply_color_chk = QCheckBox("apply_color", root); self.apply_color_chk.setChecked(True)
-        row.addWidget(self.apply_color_chk)
-        row.addStretch(1)
-        lay_pdb.addLayout(row)
-
-        btn_pdb = QPushButton("Run compute_pdb", root)
-        btn_pdb.clicked.connect(self._run_compute_pdb)
-        lay_pdb.addWidget(btn_pdb)
-
-        main.addWidget(box_pdb)
+        
 
         # ---- Color-only ----
         box_col = QGroupBox("Color only: daqcolor apply/monitor (use existing NPY)", root)
@@ -285,10 +271,10 @@ class DAQTool(ToolInstance):
         row.addWidget(QLabel("clamp_max:", root))
         self.cmax_edit = QLineEdit("1.0", root)
         row.addWidget(self.cmax_edit)
-        lay_col.addLayout(row)
+        
 
         # Monitor interval
-        row = QHBoxLayout()
+        
         row.addWidget(QLabel("interval (sec):", root))
         self.color_monitor_interval = QDoubleSpinBox(root)
         self.color_monitor_interval.setDecimals(2)
@@ -298,21 +284,37 @@ class DAQTool(ToolInstance):
         lay_col.addLayout(row)
 
         # Buttons
-        # Buttons: Requirement #5 (Apply, Monitor, Stop Monitor)
+        row = QHBoxLayout()
         btn_apply = QPushButton("Apply coloring", root)
         btn_apply.clicked.connect(self._run_color_apply)
-        lay_col.addWidget(btn_apply)
+        row.addWidget(btn_apply)
 
         btn_start = QPushButton("Start monitor", root)
         btn_start.clicked.connect(lambda: self._run_color_monitor(on=True))
-        lay_col.addWidget(btn_start)
+        row.addWidget(btn_start)
 
         btn_stop = QPushButton("Stop monitor", root)
         btn_stop.clicked.connect(lambda: self._run_color_monitor(on=False))
-        lay_col.addWidget(btn_stop)
+        row.addWidget(btn_stop)
+        lay_col.addLayout(row)
 
         main.addWidget(box_col)
 
+        # ---- PDB mode ----
+        box_pdb = QGroupBox("Compute: daqscore compute_pdb (original DAQ style)", root)
+        lay_pdb = QVBoxLayout(box_pdb)
+
+        row = QHBoxLayout()
+        self.apply_color_chk = QCheckBox("apply_color", root); self.apply_color_chk.setChecked(True)
+        row.addWidget(self.apply_color_chk)
+        row.addStretch(1)
+        lay_pdb.addLayout(row)
+
+        btn_pdb = QPushButton("Run compute_pdb", root)
+        btn_pdb.clicked.connect(self._run_compute_pdb)
+        lay_pdb.addWidget(btn_pdb)
+
+        main.addWidget(box_pdb)
 
         # finalize
         self.tool_window.ui_area.setLayout(QVBoxLayout())
