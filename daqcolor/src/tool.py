@@ -1,4 +1,5 @@
 # src/tool.py
+import os
 from chimerax.core.tools import ToolInstance
 from chimerax.ui import MainToolWindow
 from chimerax.core.commands import run
