@@ -12,6 +12,9 @@ from Qt.QtWidgets import (
 from Qt.QtWidgets import QWidget, QToolButton, QVBoxLayout, QHBoxLayout, QFrame, QSizePolicy
 from Qt.QtCore import Qt
 
+from Qt.QtGui import QDesktopServices, QPixmap
+from Qt.QtCore import QUrl, QTimer
+
 
 class CollapsibleSection(QWidget):
     def __init__(self, title: str, parent=None, expanded: bool = False):
@@ -157,11 +160,52 @@ class DAQTool(ToolInstance):
         msg = QMessageBox(self.tool_window.ui_area)
         msg.setIcon(QMessageBox.Warning)
         msg.setWindowTitle(title)
-        msg.setText("The specified NPY file already exists.\nDo you want to overwrite it?")
+        msg.setText("The specified NPY file already exists.\nWhen you execute the command (compute_grid/compute_grid), do you want to overwrite it?")
         msg.setInformativeText(path)
         msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         msg.setDefaultButton(QMessageBox.No)
         return msg.exec() == QMessageBox.Yes
+
+    # ---------------- Contour auto-sync ----------------
+    def _get_displayed_contour_from_selected_volume(self):
+        vol = self._selected_volume()
+        if vol is None:
+            return None
+        if hasattr(vol, "surfaces") and vol.surfaces:
+            try:
+                return float(vol.surfaces[0].level)
+            except Exception:
+                return None
+        return None
+
+    def _on_contour_spin_changed_by_user(self, _v):
+        # プログラム側更新中に user override が立たないように guard
+        if getattr(self, "_contour_programmatic_update", False):
+            return
+        self._contour_user_override = True
+
+    def _sync_contour_from_map_display(self):
+        # skip if user override
+        if getattr(self, "_contour_user_override", False):
+            return
+
+        disp = self._get_displayed_contour_from_selected_volume()
+        if disp is None:
+            return
+
+        # do not change if same
+        if abs(self.contour_spin.value() - disp) < 1e-6:
+            return
+
+        # signal
+        self._contour_programmatic_update = True
+        try:
+            self.contour_spin.blockSignals(True)
+            self.contour_spin.setValue(disp)
+        finally:
+            self.contour_spin.blockSignals(False)
+            self._contour_programmatic_update = False
+
 
     # ---------------- Build UI ----------------
     def _build_ui(self):
@@ -169,6 +213,34 @@ class DAQTool(ToolInstance):
         root = QWidget(parent)
         main = QVBoxLayout(root)
 
+        # ==============================
+        # Manual link with icon (TOP)
+        # ==============================
+        manual_url = "https://cxtoolshed.rbvi.ucsf.edu/apps/chimeraxdaqplugin"
+
+        link_row = QHBoxLayout()
+
+        # --- icon ---
+        #icon_label = QLabel(root)
+        #icon = QPixmap(":/icons/help.png")  # ChimeraX built-in help icon
+        #icon_label.setPixmap(icon.scaled(16, 16, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        #link_row.addWidget(icon_label)
+
+        # --- text link ---
+        text_label = QLabel(
+            f'<a href="{manual_url}"><b>DAQplugin User Manual</b></a>',
+            root
+        )
+        text_label.setOpenExternalLinks(False)
+        text_label.linkActivated.connect(
+            lambda _=None, u=manual_url: QDesktopServices.openUrl(QUrl(u))
+        )
+        link_row.addWidget(text_label)
+
+        link_row.addStretch(1)
+        main.addLayout(link_row)
+
+        
         # ---- Model / Map selection ----
         box_sel = QGroupBox("Inputs (Loaded model/Map/NPY files)", root)
         lay_sel = QVBoxLayout(box_sel)
@@ -197,6 +269,7 @@ class DAQTool(ToolInstance):
         lay_sel.addLayout(row)
 
         main.addWidget(box_sel)
+        
 
         # ---- Common options ----
         box_opt = QGroupBox("Common options", root)
@@ -230,7 +303,12 @@ class DAQTool(ToolInstance):
 
         row = QHBoxLayout()
         row.addWidget(QLabel("contour:", root))
-        self.contour_spin = QDoubleSpinBox(root); self.contour_spin.setDecimals(4); self.contour_spin.setRange(-1e9, 1e9); self.contour_spin.setValue(0.0)
+        self.contour_spin = QDoubleSpinBox(root); 
+        self.contour_spin.setDecimals(4); 
+        self.contour_spin.setRange(-1e9, 1e9); 
+        self.contour_spin.setValue(0.0)
+
+
         row.addWidget(self.contour_spin)
         row.addWidget(QLabel("stride:", root))
         self.stride_spin = QSpinBox(root); self.stride_spin.setRange(1, 50); self.stride_spin.setValue(2)
@@ -239,6 +317,25 @@ class DAQTool(ToolInstance):
         self.mp_spin = QSpinBox(root); self.mp_spin.setRange(1000, 100000000); self.mp_spin.setValue(500000)
         row.addWidget(self.mp_spin)
         lay_grid.addLayout(row)
+
+        # Auto Update contour level ---
+        self._contour_user_override = False  # 手入力したら True にする
+
+        # Stop auto update when user changes contour spin
+        self.contour_spin.valueChanged.connect(self._on_contour_spin_changed_by_user)
+
+        # Check Map changes 
+        self.volume_combo.currentIndexChanged.connect(self._sync_contour_from_map_display)
+
+        # Check displayed contour level every 0.5 sec
+        self._contour_timer = QTimer(root)
+        self._contour_timer.setInterval(500)  # 0.5 sec
+        self._contour_timer.timeout.connect(self._sync_contour_from_map_display)
+        self._contour_timer.start()
+
+        # sync once at start
+        self._sync_contour_from_map_display()
+        # ----
 
 
         btn_grid = QPushButton("Run compute_grid", root)
@@ -303,12 +400,6 @@ class DAQTool(ToolInstance):
         # ---- PDB mode ----
         box_pdb = QGroupBox("Compute: daqscore compute_pdb (original DAQ style)", root)
         lay_pdb = QVBoxLayout(box_pdb)
-
-        row = QHBoxLayout()
-        self.apply_color_chk = QCheckBox("apply_color", root); self.apply_color_chk.setChecked(True)
-        row.addWidget(self.apply_color_chk)
-        row.addStretch(1)
-        lay_pdb.addLayout(row)
 
         btn_pdb = QPushButton("Run compute_pdb", root)
         btn_pdb.clicked.connect(self._run_compute_pdb)
@@ -393,7 +484,7 @@ class DAQTool(ToolInstance):
         if outp:
             cmd += f" output \"{outp}\""
 
-        cmd += f" apply_color {str(bool(self.apply_color_chk.isChecked())).lower()}"
+        cmd += f" apply_color true"
 
         #no save
         #save_model = self.save_model_edit.text().strip()
