@@ -27,6 +27,9 @@ DAQplugin/
 ├── daqcolor/             # ChimeraX plugin
 │   ├── src/
 │   ├── bundle_info.xml
+│   ├── cmd.py            # commands for ChimeraX
+│   ├── compute.py        # DAQ for ChimeraX
+│   ├── onnx_model.py     # DL for ChimeraX
 │   └── 00README.txt
 ├── cli/                  # Command-line scripts
 ├── map_util/             # Map preprocessing utilities
@@ -38,8 +41,109 @@ DAQplugin/
 ```
 
 ---
+## Installation on ChimeraX Toolshed
+- In the Menu bar: Tools > More Tools > DAQplugin page > Click [Download]
+### Start GUI
+- Tools > Validation > DAQplugin
 
-## Installation
+## Use GUI
+<img src="img/gui.png" width="600">
+
+- DAQplugin GUI supports both grid-based DAQ computation from cryo-EM maps and structure-based DAQ computation (original DAQ style), as well as real-time coloring and monitoring.
+
+### 1. Inputs
+- Structure: Select a loaded atomic model (PDB/mmCIF) from the ChimeraX session.
+`Example: #2 7jsn`
+
+- Map: Select a loaded cryo-EM density map.
+`Example: #1 emd_22458.mrc`
+
+- Output / Load Existing NPY: Specify a path to
+Save computed DAQ scores as an .npy file, or
+Load an existing .npy file for coloring and monitoring only.
+
+### 2. Compute Options
+- batch_size: 
+Controls how many grid points are processed per batch during grid-based DAQ computation. Larger values → faster computation but higher memory usage `Default: 512`
+
+### 3. Grid-based DAQ Score Computation
+This mode computes DAQ scores by scanning the EM map on a grid.
+
+- Parameters
+  - contour: Density threshold used to select grid points. Only grid points with density ≥ contour are used for the normalization process. This value should typically match the contour level used for map visualization in ChimeraX.
+
+  - stride: Grid sampling interval (in voxels). 1 = dense sampling (slowest, most accurate). 2 or higher = faster computation with reduced sampling.  `Recommended: 2`
+
+  - max_points: Maximum number of grid points to evaluate. Useful for very large maps to limit memory and runtime.
+
+- Run
+  - Click [Run Grid-based DAQ score computation] to:
+
+    Scan the map above the specified contour level
+
+    Compute DAQ scores
+
+    Save results to the specified .npy file
+
+### 4. Coloring / Monitoring with Existing NPY Scores
+
+This section is used without recomputing DAQ scores, relying instead on an existing .npy file.
+
+- npy_path:
+ Automatically taken from Output/Load Existing NPY if specified above.
+
+- metric: Select which DAQ metric to visualize:
+
+  `aa_score` – DAQ(AA), amino-acid-wise score
+
+  `atom_score` – DAQ(Cα), Cα likelihood score
+
+- k: Neighborhood size for smoothing (number of neighboring residues).
+`recommended: 1`
+
+- half_window: Half-size of the sliding window used for sequence-based averaging.
+`Example: 9 → window size = 19 residues`
+
+- clamp_min / clamp_max: Clamp score values for coloring. `Typical range: -1.0 to 1.0`
+
+- interval (sec): Update interval for monitoring mode.
+
+- Apply coloring : Colors the selected structure based on the chosen DAQ metric.
+
+- Start monitor : Continuously updates DAQ score coloring.
+
+- Stop monitor: Stops the monitoring.
+
+## 5. Structure-based DAQ Score Computation (Original DAQ)
+
+This mode computes DAQ scores using the original structure-based DAQ protocol, without grid-based scanning. Uses heavy atom positions directly from the atomic model, and then normalize the DAQ score.
+This mode is suitable for direct comparison with previously published DAQ results. **This mode can not be used for monitoring.**
+- Click [Run Structure-based DAQ score computation] to execute.
+
+## 6. Typical Workflows
+### A. Full DAQ computation and visualization
+
+1. Load model and map into ChimeraX
+2. Set contour
+3. Run Grid-based DAQ score computation
+4. Apply coloring using aa_score
+
+### B. Coloring only (use precomputed scores npy file)
+
+1. Load model and map
+2. Specify an existing .npy file
+3. Click Apply coloring or Start monitoring
+
+### C. DAQ score Monitoring with ISOLDE
+
+1. Start an external refinement pipeline (ISOLDE).
+2. Run Grid-based DAQ score computation. or Load the .npy path in DAQplugin
+3. Click Start monitor
+4. Observe DAQ score changes during the refinement process.
+5. Click Stop monitor
+
+---
+## Installation from GitHub
 
 ### Clone the Repository (IMPORTANT)
 
