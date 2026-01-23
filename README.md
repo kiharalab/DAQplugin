@@ -58,9 +58,8 @@ DAQplugin/
 - Map: Select a loaded cryo-EM density map.
 `Example: #1 emd_22458.mrc`
 
-- Output / Load Existing NPY: Specify a path to
-Save computed DAQ scores as an .npy file, or
-Load an existing .npy file for coloring and monitoring only.
+- Output/Overwrite NPT : Specify a path to save computed DAQ scores as an .npy file
+- Load Existing NPY : Load an existing .npy file for coloring and monitoring only.
 
 ### 2. Compute Options
 - batch_size: 

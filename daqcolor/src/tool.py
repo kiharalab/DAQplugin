@@ -91,6 +91,7 @@ class DAQTool(ToolInstance):
         path, _ = QFileDialog.getSaveFileName(self.tool_window.ui_area, title, "")
         if path:
             line_edit.setText(path)
+    
 
     def _refresh_models(self):
         """Populate structure and volume combos from session models."""
@@ -194,7 +195,7 @@ class DAQTool(ToolInstance):
         msg = QMessageBox(self.tool_window.ui_area)
         msg.setIcon(QMessageBox.Warning)
         msg.setWindowTitle(title)
-        msg.setText("The specified NPY file already exists.\nWhen you execute the command (compute_grid/compute_grid), do you want to overwrite it?")
+        msg.setText("The specified NPY file already exists.\n Do you want to overwrite it?")
         msg.setInformativeText(path)
         msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         msg.setDefaultButton(QMessageBox.No)
@@ -301,9 +302,10 @@ class DAQTool(ToolInstance):
 
         lay_sel.addLayout(row)
 
+        #Save NPY
         row = QHBoxLayout()
-        npy_label = QLabel("Output/Load Existing NPY:", root)
-        npy_label.setToolTip("Path to save computed scores or load existing scores from NPY file")
+        npy_label = QLabel("Output/Overwrite NPY:", root)
+        npy_label.setToolTip("Path to save computed scores in NPY format")
         row.addWidget(npy_label)
         self.output_edit = QLineEdit(root)
         btn_out = QPushButton("Browse", root)
@@ -311,6 +313,19 @@ class DAQTool(ToolInstance):
         btn_out.clicked.connect(lambda: self._browse_save_file(self.output_edit, "Save NPY"))
         row.addWidget(self.output_edit, 1)
         row.addWidget(btn_out)
+        lay_sel.addLayout(row)
+
+        #Load NPY
+        row = QHBoxLayout()
+        npy_label = QLabel("Load Existing NPY:", root)
+        npy_label.setToolTip("Path to load existing scores from NPY file")
+        row.addWidget(npy_label)
+        self.load_edit = QLineEdit(root)
+        btn_load = QPushButton("Browse", root)
+        btn_load.setToolTip("Browse for existing NPY file")
+        btn_load.clicked.connect(lambda: self._browse_open_file(self.load_edit, "Load NPY"))
+        row.addWidget(self.load_edit, 1)
+        row.addWidget(btn_load)
         lay_sel.addLayout(row)
 
         main.addWidget(box_sel)
@@ -399,7 +414,7 @@ class DAQTool(ToolInstance):
         row.addWidget(self.npy_use_edit, 1)
         lay_col.addLayout(row)
 
-        self.output_edit.textChanged.connect(self.npy_use_edit.setText)
+        self.load_edit.textChanged.connect(self.npy_use_edit.setText)
 
         # metric, k, half_window options
         row = QHBoxLayout()
@@ -531,6 +546,7 @@ class DAQTool(ToolInstance):
 
         self.session.logger.info(f"Running: {cmd}")
         run(self.session, cmd)
+        self.load_edit.setText(outp)
 
     def _run_compute_pdb(self):
         if not self._require_map_and_npy("compute_pdb"):
@@ -569,6 +585,7 @@ class DAQTool(ToolInstance):
 
         self.session.logger.info(f"Running: {cmd}")
         run(self.session, cmd)
+        self.load_edit.setText(outp)
 
     def _run_color_apply(self):
         st_tok = self._structure_token_or_none()
@@ -579,8 +596,9 @@ class DAQTool(ToolInstance):
         if not self._require_map_and_npy("daqcolor apply"):
             return
         
-        npy = self.output_edit.text().strip()
-        
+        #npy = self.output_edit.text().strip()
+        npy = self.load_edit.text().strip()
+
         if not npy:
             self.session.logger.error("Specify npy_path.")
             return
@@ -615,7 +633,9 @@ class DAQTool(ToolInstance):
         # Requirement #1: Map & NPY are mandatory (use NPY from Inputs)
         if not self._require_map_and_npy("daqcolor monitor"):
             return
-        npy = self.output_edit.text().strip()
+        #npy = self.output_edit.text().strip()
+        npy = self.load_edit.text().strip()
+
 
         interval = float(self.color_monitor_interval.value())
 
