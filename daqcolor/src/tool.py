@@ -176,7 +176,17 @@ class DAQTool(ToolInstance):
             return False
         npy = self.output_edit.text().strip()
         if not npy:
-            self.session.logger.error(f"{context}: Output/Load Existing NPY path must be specified.")
+            self.session.logger.error(f"{context}: Output NPY path must be specified.")
+            return False
+        return True
+    
+    def _require_npy(self, context: str) -> bool:
+        """
+        Enforce: Load NPY path must always be specified.
+        """
+        npy = self.load_edit.text().strip()
+        if not npy:
+            self.session.logger.error(f"{context}: Load NPY path must be specified.")
             return False
         return True
     
@@ -593,7 +603,7 @@ class DAQTool(ToolInstance):
             self.session.logger.error("Select a Structure to color.")
             return
 
-        if not self._require_map_and_npy("daqcolor apply"):
+        if not self._require_npy("daqcolor apply"):
             return
         
         #npy = self.output_edit.text().strip()
@@ -631,7 +641,7 @@ class DAQTool(ToolInstance):
             return
 
         # Requirement #1: Map & NPY are mandatory (use NPY from Inputs)
-        if not self._require_map_and_npy("daqcolor monitor"):
+        if not self._require_npy("daqcolor monitor"):
             return
         #npy = self.output_edit.text().strip()
         npy = self.load_edit.text().strip()
