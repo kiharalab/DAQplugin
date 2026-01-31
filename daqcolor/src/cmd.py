@@ -3,7 +3,7 @@ import numpy as np
 from chimerax.core.commands import (CmdDesc, StringArg, IntArg, BoolArg,
                                     ColormapArg, FloatArg, ModelArg)
 
-
+_KDTREE_CACHE = {}  # key -> cKDTree
 # Session Monitor
 _MON = {}  # (session, model.id_string) -> dict
 '''
@@ -48,11 +48,13 @@ def _residue_coords(residues, atom_name="CA", use_scene=True):
     return np.asarray(coords, dtype=np.float32)
 
 
-# 追加: _knn_idx を距離閾値対応 & 距離も返す
-def _knn_idx(db_pts, q_pts, k=8, radius=None, chunk=2000):
+# kNN search
+# Add tree
+def _knn_idx(db_pts, q_pts, k=8, radius=None, chunk=2000, tree=None):
     try:
         from scipy.spatial import cKDTree
-        tree = cKDTree(db_pts)
+        if tree is None:
+            tree = cKDTree(db_pts)
         if radius is None:
             dist, idx = tree.query(q_pts, k=k)
         else:
@@ -87,7 +89,7 @@ def _knn_idx(db_pts, q_pts, k=8, radius=None, chunk=2000):
         return out_dist, out_idx
 
 
-def _aggregate(pts, aa, q, k=1, radius=None):
+def _aggregate(pts, aa, q, k=1, radius=None, tree=None):
     """
     pts: (N,3)
     aa:  (N,C) 
@@ -98,9 +100,17 @@ def _aggregate(pts, aa, q, k=1, radius=None):
       aa_nn:        (M,C) 
       has_neighbor: (M,)  
     """
-    dist, idx = _knn_idx(pts, q, k=k, radius=radius)  # dist:(M,k), idx:(M,k)
+    dist, idx = _knn_idx(pts, q, k=k, radius=radius,tree=tree)  # dist:(M,k), idx:(M,k)
     N, C = aa.shape
     M = q.shape[0]
+
+    if k == 1:
+        idx0 = idx[:, 0]
+        d0   = dist[:, 0]
+        valid = (idx0 >= 0) & (idx0 < N) & np.isfinite(d0)
+        aa_nn = np.zeros((M, C), dtype=aa.dtype)
+        aa_nn[valid] = aa[idx0[valid]]
+        return aa_nn, valid
 
     # index
     valid = (idx >= 0) & (idx < N) & np.isfinite(dist)
@@ -174,7 +184,14 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
     atom = arr[:, 23:29]
     #ss3 = arr[:, 29:32]  # SS not use
 
+    key = (npy_path, os.path.getmtime(npy_path), pts.shape[0])
+    tree = _KDTREE_CACHE.get(key)
 
+    if tree is None:
+        from scipy.spatial import cKDTree
+        tree = cKDTree(pts)
+        _KDTREE_CACHE.clear()          # keep only one tree
+        _KDTREE_CACHE[key] = tree
 
     residues = model.residues
     if residues is None or len(residues) == 0:
@@ -182,8 +199,8 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
         return
 
     q = _residue_coords(residues, atom_name=atom_name, use_scene=True)  # (M,3)
-    aa_mean, has_nbr = _aggregate(pts, aa, q, k=k, radius=radius)
-    atom_mean, has_nbr = _aggregate(pts, atom, q, k=k, radius=radius)
+    aa_mean, has_nbr = _aggregate(pts, aa, q, k=k, radius=radius, tree=tree)
+    atom_mean, has_nbr = _aggregate(pts, atom, q, k=k, radius=radius, tree=tree)
     # metric
     if metric == "aa_score":
         # 残基のAAタイプに対応する列だけを抽出
