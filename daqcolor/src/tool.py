@@ -435,6 +435,7 @@ class DAQTool(ToolInstance):
         self.metric_combo.addItems([
             "aa_score",    # DAQ(AA)
             "atom_score",  # DAQ(CA)
+            "ss_score",    # DAQ(SS)
         ])
         self.metric_combo.setCurrentText("aa_score")
         row.addWidget(self.metric_combo, 1)

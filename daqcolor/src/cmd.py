@@ -182,7 +182,7 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
     pts  = arr[:, :3].astype(np.float32)
     aa   = arr[:, 3:23].astype(np.float32)
     atom = arr[:, 23:29]
-    #ss3 = arr[:, 29:32]  # SS not use
+    ss3 = arr[:, 29:32]  # SS : 0,1,2 = helix, sheet, coil
 
     key = (npy_path, os.path.getmtime(npy_path), pts.shape[0])
     tree = _KDTREE_CACHE.get(key)
@@ -201,6 +201,7 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
     q = _residue_coords(residues, atom_name=atom_name, use_scene=True)  # (M,3)
     aa_mean, has_nbr = _aggregate(pts, aa, q, k=k, radius=radius, tree=tree)
     atom_mean, has_nbr = _aggregate(pts, atom, q, k=k, radius=radius, tree=tree)
+    ss_mean, has_nbr  = _aggregate(pts, ss3,  q, k=k, radius=radius, tree=tree)
     # metric
     if metric == "aa_score":
         # 残基のAAタイプに対応する列だけを抽出
@@ -221,6 +222,21 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
     elif metric == "atom_score":
         j = ATOM_TYPES6.index("CA")
         scal = atom_mean[:, j]
+    elif metric == "ss_score":
+        # ss3 の列順を [HELIX, STRAND, COIL] と仮定（必要なら並べ替え）
+        scal = np.full((len(residues),), np.nan, dtype=np.float32)
+
+        # 残基ごとに列indexを作る
+        idx = np.empty((len(residues),), dtype=np.int32)
+        for i, r in enumerate(residues):
+            if r.ss_type == r.SS_HELIX:
+                idx[i] = 0
+            elif r.ss_type == r.SS_STRAND:
+                idx[i] = 1
+            else:
+                idx[i] = 2  # COIL or unknown
+
+        scal[:] = ss_mean[np.arange(len(residues)), idx]
     else:
         raise ValueError(f"Unknown metric: {metric}")
 
