@@ -1,5 +1,5 @@
 <BundleInfo name="ChimeraX-DAQplugin"
-            version="0.13.3" package="chimerax.daqcolor"
+            version="0.13.4" package="chimerax.daqcolor"
             minSessionVersion="1" maxSessionVersion="1">
 
   <Author>Genki Terashi</Author>
@@ -43,7 +43,8 @@
       Compute DAQ scores from a cryo-EM map using contour threshold</ChimeraXClassifier>
     <ChimeraXClassifier>ChimeraX :: Command :: daqscore compute_pdb :: Volume Data ::
       Compute DAQ scores at heavy atom positions from a PDB structure</ChimeraXClassifier>
-
+    <ChimeraXClassifier>ChimeraX :: Command :: daq arrowwin :: General ::
+      Show DAQ-improving move arrows (window-aware) using aa_score</ChimeraXClassifier>
     <ChimeraXClassifier>ChimeraX :: Tool :: DAQplugin ::
       Validation :: DAQ score computation and residue-wise visualization</ChimeraXClassifier>
   </Classifiers>

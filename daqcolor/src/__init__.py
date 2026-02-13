@@ -47,6 +47,10 @@ class _API(BundleAPI):
         elif ci.name == "daqscore compute_pdb":
             func, desc = cmd.daqscore_compute_pdb, cmd.daqscore_compute_pdb_desc
 
+        # Arrow window commands (arrowwin)
+        elif ci.name == "daq arrowwin":
+            func, desc = cmd.daq_arrowwin, cmd.daq_arrowwin_desc
+
         else:
             raise ValueError(f"Unknown command: {ci.name}")
 

@@ -69,6 +69,8 @@ class DAQTool(ToolInstance):
         
         self.tool_window.manage(None)
 
+        self._arrowwin_group = None  # To track the ArrowWin group model for easy removal
+
     def delete(self):
         """Clean up handlers when tool is closed."""
         if hasattr(self, '_model_add_handler'):
@@ -382,7 +384,7 @@ class DAQTool(ToolInstance):
         lay_grid.addLayout(row)
 
         # Auto Update contour level ---
-        self._contour_user_override = False  # 手入力したら True にする
+        self._contour_user_override = False  # Flag to track if user has manually changed contour level
 
         # Stop auto update when user changes contour spin
         self.contour_spin.valueChanged.connect(self._on_contour_spin_changed_by_user)
@@ -497,6 +499,104 @@ class DAQTool(ToolInstance):
         lay_col.addLayout(row)
 
         main.addWidget(box_col)
+
+        # ---- ArrowWin (Backbone shift suggestion) ----
+        box_arrow = QGroupBox("Sequence shift suggestion", root)
+        lay_arrow = QVBoxLayout(box_arrow)
+
+        # Use NPY from Inputs (Load Existing NPY)
+        row = QHBoxLayout()
+        aw_npy_label = QLabel("npy_path (from Inputs):", root)
+        aw_npy_label.setToolTip("Path to NPY file containing pre-computed Grid-based DAQ scores (uses 'Load Existing NPY' above)")
+        row.addWidget(aw_npy_label)
+        self.aw_npy_edit = QLineEdit(root)
+        self.aw_npy_edit.setReadOnly(True)
+        self.aw_npy_edit.setPlaceholderText("Use 'Load Existing NPY' specified above")
+        row.addWidget(self.aw_npy_edit, 1)
+        lay_arrow.addLayout(row)
+        self.load_edit.textChanged.connect(self.aw_npy_edit.setText)
+
+        # Parameters row 1
+        row = QHBoxLayout()
+        nwin_label = QLabel("half_window:", root)
+        nwin_label.setToolTip("Half-window size for scoring window around each residue")
+        row.addWidget(nwin_label)
+        self.aw_nwin_spin = QSpinBox(root); self.aw_nwin_spin.setRange(0, 20); self.aw_nwin_spin.setValue(5)
+        row.addWidget(self.aw_nwin_spin)
+
+        kshift_label = QLabel("max shift:", root)
+        kshift_label.setToolTip("Candidate backbone index shifts in [-kshift..-1, +1..+kshift]")
+        row.addWidget(kshift_label)
+        self.aw_kshift_spin = QSpinBox(root); self.aw_kshift_spin.setRange(1, 20); self.aw_kshift_spin.setValue(5)
+        row.addWidget(self.aw_kshift_spin)
+
+        minmove_label = QLabel("min_d:", root)
+        minmove_label.setToolTip("Minimum Length to draw an arrow (Angstrom)")
+        row.addWidget(minmove_label)
+        self.aw_minmove_spin = QDoubleSpinBox(root); self.aw_minmove_spin.setDecimals(1); self.aw_minmove_spin.setRange(0.0, 10.0); self.aw_minmove_spin.setValue(1.0)
+        row.addWidget(self.aw_minmove_spin)
+
+        minimp_label = QLabel("min_improve:", root)
+        minimp_label.setToolTip("Lower bound of average DAQ score improvement (window-mean). Below this, no arrow is drawn")
+        row.addWidget(minimp_label)
+        self.aw_minimp_spin = QDoubleSpinBox(root); self.aw_minimp_spin.setDecimals(1); self.aw_minimp_spin.setRange(0.0, 5.0); self.aw_minimp_spin.setValue(1.0)
+        self.aw_minimp_spin.setSingleStep(0.1)
+        row.addWidget(self.aw_minimp_spin)
+        lay_arrow.addLayout(row)
+
+        # Parameters row 2 (appearance)
+        row = QHBoxLayout()
+        base_radius_label = QLabel("r:", root)
+        base_radius_label.setToolTip("Base cone radius (will be scaled by improvement if scaling is enabled)")
+        row.addWidget(base_radius_label)
+        self.aw_radius_spin = QDoubleSpinBox(root); self.aw_radius_spin.setDecimals(1); self.aw_radius_spin.setRange(0.0, 10.0); self.aw_radius_spin.setValue(0.4)
+        self.aw_radius_spin.setSingleStep(0.1)
+        row.addWidget(self.aw_radius_spin)
+
+        vmax_color_label = QLabel("max_color:", root)
+        vmax_color_label.setToolTip("Improvement value mapped to maximum redness (>= vmax_color becomes fully red)")
+        row.addWidget(vmax_color_label)
+        self.aw_vmax_color_spin = QDoubleSpinBox(root); self.aw_vmax_color_spin.setDecimals(1); self.aw_vmax_color_spin.setRange(1e-6, 5.0); self.aw_vmax_color_spin.setValue(2.0)
+        self.aw_vmax_color_spin.setSingleStep(0.1)
+        row.addWidget(self.aw_vmax_color_spin)
+
+        vmax_radius_label = QLabel("max_sco:", root)
+        vmax_radius_label.setToolTip("Improvement value mapped to maximum radius scaling (>= vmax_radius becomes max_radius_scale)")
+        row.addWidget(vmax_radius_label)
+        self.aw_vmax_radius_spin = QDoubleSpinBox(root); self.aw_vmax_radius_spin.setDecimals(1); self.aw_vmax_radius_spin.setRange(1e-6, 5.0); self.aw_vmax_radius_spin.setValue(2.0)
+        self.aw_vmax_radius_spin.setSingleStep(0.1)
+        row.addWidget(self.aw_vmax_radius_spin)
+
+        minrs_label = QLabel("Scale min:", root)
+        minrs_label.setToolTip("Radius multiplier at improvement=0")
+        row.addWidget(minrs_label)
+        self.aw_minrs_spin = QDoubleSpinBox(root); self.aw_minrs_spin.setDecimals(1); self.aw_minrs_spin.setRange(0.0, 100.0); self.aw_minrs_spin.setValue(0.5)
+        self.aw_minrs_spin.setSingleStep(0.1)
+        row.addWidget(self.aw_minrs_spin)
+
+        maxrs_label = QLabel("max:", root)
+        maxrs_label.setToolTip("Radius multiplier at improvement>=vmax_radius")
+        row.addWidget(maxrs_label)
+        self.aw_maxrs_spin = QDoubleSpinBox(root); self.aw_maxrs_spin.setDecimals(1); self.aw_maxrs_spin.setRange(0.0, 100.0); self.aw_maxrs_spin.setValue(2.0)
+        self.aw_maxrs_spin.setSingleStep(0.1)
+        row.addWidget(self.aw_maxrs_spin)
+        lay_arrow.addLayout(row)
+
+        # Buttons
+        row = QHBoxLayout()
+        btn_arrow = QPushButton("Draw Arrows", root)
+        btn_arrow.setToolTip("Draw backbone-shift suggestion cones. If residues are selected, only selected residues are processed; otherwise the whole model is processed")
+        btn_arrow.clicked.connect(self._run_arrowwin)
+        row.addWidget(btn_arrow)
+
+        btn_arrow_clear = QPushButton("Remove Arrow group", root)
+        btn_arrow_clear.setToolTip("Remove all ArrowWin cones by deleting the group model")
+        btn_arrow_clear.clicked.connect(self._clear_arrowwin_group)
+        row.addWidget(btn_arrow_clear)
+        lay_arrow.addLayout(row)
+
+        main.addWidget(box_arrow)
+
 
         # ---- PDB mode ----
         box_pdb = QGroupBox("Compute: Structure-based DAQ score computation (Original DAQ style)", root)
@@ -676,3 +776,70 @@ class DAQTool(ToolInstance):
 
         self.session.logger.info(f"Running: {cmd}")
         run(self.session, cmd)
+
+    # ---- ArrowWin ----
+    def _run_arrowwin(self):
+        """Run backbone-shift suggestion cones (daq arrowwin)."""
+
+        if not self._require_npy("daq arrowwin"):
+            return
+
+        npy = self.load_edit.text().strip()
+        if not npy:
+            self.session.logger.error("ArrowWin requires a NPY file (Load Existing NPY).")
+            return
+
+        st_tok = self._structure_token_or_none()
+        if st_tok is None:
+            self.session.logger.error("ArrowWin requires a Structure selected in Inputs.")
+            return
+
+        # NOTE: command itself prioritizes selection if residues are selected.
+        cmd = f"daq arrowwin {st_tok} \"{npy}\""
+
+        cmd += f" nwin {int(self.aw_nwin_spin.value())}"
+        cmd += f" kshift {int(self.aw_kshift_spin.value())}"
+        cmd += f" minmove {float(self.aw_minmove_spin.value()):.3f}"
+        cmd += f" radius {float(self.aw_radius_spin.value()):.3f}"
+        cmd += f" vmax_color {float(self.aw_vmax_color_spin.value()):.3f}"
+        cmd += f" min_improvement {float(self.aw_minimp_spin.value()):.3f}"
+        cmd += f" vmax_radius {float(self.aw_vmax_radius_spin.value()):.3f}"
+        cmd += f" min_radius_scale {float(self.aw_minrs_spin.value()):.3f}"
+        cmd += f" max_radius_scale {float(self.aw_maxrs_spin.value()):.3f}"
+        cmd += f" group_name \"DAQ Arrows\""
+
+        self.session.logger.info(f"Running: {cmd}")
+        run(self.session, cmd, log=False)
+        # cache group model by name (top-level) after command runs
+        self._arrowwin_group = None
+        for m in self.session.models.list():
+            if (getattr(m, "name", "") or "").strip() == "DAQ Arrows":
+                self._arrowwin_group = m
+                break
+
+    def _clear_arrowwin_group(self, name: str = "DAQ Arrows"):
+        g = getattr(self, "_arrowwin_group", None)
+        if g is not None:
+            try:
+                self.session.models.remove([g])
+                self.session.logger.info("Removed ArrowWin group (by reference).")
+            except Exception as e:
+                self.session.logger.info(f"Failed to remove ArrowWin group: {e}")
+            finally:
+                self._arrowwin_group = None
+            return
+
+        # fallback: remove by name (top-level)
+        removed = 0
+        for m in list(self.session.models.list()):
+            if (getattr(m, "name", "") or "").strip() == name:
+                try:
+                    self.session.models.remove([m])
+                    removed += 1
+                except Exception:
+                    pass
+
+        if removed:
+            self.session.logger.info(f"Removed Arrow group: '{name}' ({removed} model(s))")
+        else:
+            self.session.logger.info(f"Arrow group not found: '{name}'")
