@@ -7,7 +7,7 @@ from chimerax.core.commands import run
 from Qt.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QDoubleSpinBox,
     QSpinBox, QPushButton, QCheckBox, QGroupBox, QFileDialog, QComboBox,
-    QToolButton, QFrame, QSizePolicy, QMessageBox
+    QToolButton, QFrame, QSizePolicy, QMessageBox, QScrollArea
 )
 
 from Qt.QtWidgets import QWidget, QToolButton, QVBoxLayout, QHBoxLayout, QFrame, QSizePolicy
@@ -258,7 +258,8 @@ class DAQTool(ToolInstance):
     def _build_ui(self):
         parent = self.tool_window.ui_area
         root = QWidget(parent)
-        main = QVBoxLayout(root)
+        #main = QVBoxLayout(root)
+        outer = QVBoxLayout(root)
 
         # ==============================
         # Manual link with icon (TOP)
@@ -285,14 +286,34 @@ class DAQTool(ToolInstance):
         link_row.addWidget(text_label)
 
         link_row.addStretch(1)
-        main.addLayout(link_row)
+        #main.addLayout(link_row)
+        outer.addLayout(link_row)
 
         # ==============================
         # Hint about tooltips
         # ==============================
         hint_label = QLabel("<i>Hover over parameter labels and buttons to see detailed information</i>", root)
         hint_label.setStyleSheet("color: #666; padding: 5px;")
-        main.addWidget(hint_label)
+        outer.addWidget(hint_label)
+
+        # ==============================
+        # Scrollable main content
+        # ==============================
+        scroll = QScrollArea(root)
+        scroll.setWidgetResizable(True)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer.addWidget(scroll, 1)
+
+        scroll_widget = QWidget(scroll)
+        scroll.setWidget(scroll_widget)
+
+        # 以降の UI 要素はこの main に積む（既存コードをほぼ変更せずに済む）
+        main = QVBoxLayout(scroll_widget)
+        main.setContentsMargins(0, 0, 0, 0)
+        main.setSpacing(6)        
+
+
 
         
         # ---- Model / Map selection ----
