@@ -1084,6 +1084,9 @@ def daq_arrowwin(
     vmax_radius: float = 1.0,
     max_radius_scale: float = 3.0,
     min_radius_scale: float = 0.5,
+    progress_callback=None,        # ★追加（compute.pyと同じ思想）
+    update_every: int = 25,        # ★追加（進捗更新の間引き）
+    is_cancelled=None,             # ★任意：キャンセルルフラグ（例: threading.Event()）
 ):
     """
     Behavior:
@@ -1091,6 +1094,16 @@ def daq_arrowwin(
       - Else: draw arrows on all residues in 'structure' (model mode).
       - If selection exists and structure is given, selection still wins.
     """
+
+    def update_progress(cur, tot, msg=""):
+        if progress_callback:
+            progress_callback(cur, tot, msg)
+        else:
+            # same as compute.py
+            if msg:
+                session.logger.status(f"{msg} ({cur}/{tot})")
+            else:
+                session.logger.status(f"({cur}/{tot})")
 
     if npy_path is None:
         raise UserError("Please specify npy_path, e.g. 'daq arrowwin #1 scores.npy'.")
@@ -1110,6 +1123,20 @@ def daq_arrowwin(
     # selection mode
     # -----------------------
     if sel_map:
+        #compute total for progress
+        targets = []
+        for st, sel_res in sel_map.items():
+            if structure is not None and st is not structure:
+                continue
+            for r in sel_res:
+                ch = r.chain_id
+                if chain is not None and ch != chain:
+                    continue
+                targets.append((st, r))
+
+        total = max(1, len(targets))
+        done = 0
+        update_progress(0, total, f"Arrow: selection mode ({total} residues")
         # For each structure that has selection, run only those residues.
         for st, sel_res in sel_map.items():
             # optional: if user also specified structure, restrict to that structure only
@@ -1154,6 +1181,11 @@ def daq_arrowwin(
                     min_radius_scale=min_radius_scale,
                     
                 )
+                done += 1
+                if (done % update_every) == 0 or done == total:
+                    update_progress(done, total, f"Arrow: drawing ({done}/{total})")
+
+        update_progress(total, total, "Arrow: done")
 
         return  # done
 
@@ -1168,6 +1200,20 @@ def daq_arrowwin(
         chain_ids = [c for c in chain_ids if c == chain]
         if not chain_ids:
             raise UserError(f"Chain '{chain}' not found in {structure}.")
+
+    # check total residues for progress
+    chain_res_map = {}
+    total = 0
+    for ch in chain_ids:
+        residues_all = _get_chain_residues_in_order(structure, ch)
+        if residues_all:
+            chain_res_map[ch] = residues_all
+            total += len(residues_all)
+
+    total = max(1, total)
+    done = 0
+    update_progress(0, total, f"ArrowWin: model mode ({total} residues)")
+
 
     for ch in chain_ids:
         residues_all = _get_chain_residues_in_order(structure, ch)
@@ -1196,6 +1242,12 @@ def daq_arrowwin(
                 min_improvement=min_improvement,
                 
             )
+            done += 1
+            if (done % update_every) == 0 or done == total:
+                update_progress(done, total, f"ArrowWin: drawing ({done}/{total})")
+
+    update_progress(total, total, "Arrow: done")
+    
 
 
 
