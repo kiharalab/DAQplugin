@@ -260,7 +260,7 @@ class DAQTool(ToolInstance):
         root = QWidget(parent)
         #main = QVBoxLayout(root)
         outer = QVBoxLayout(root)
-
+        outer.setContentsMargins(0, 0, 0, 0)
         # ==============================
         # Manual link with icon (TOP)
         # ==============================
@@ -293,7 +293,7 @@ class DAQTool(ToolInstance):
         # Hint about tooltips
         # ==============================
         hint_label = QLabel("<i>Hover over parameter labels and buttons to see detailed information</i>", root)
-        hint_label.setStyleSheet("color: #666; padding: 5px;")
+        hint_label.setStyleSheet("color: #666; padding: 1px;")
         outer.addWidget(hint_label)
 
         # ==============================
@@ -303,6 +303,7 @@ class DAQTool(ToolInstance):
         scroll.setWidgetResizable(True)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
         outer.addWidget(scroll, 1)
 
         scroll_widget = QWidget(scroll)
