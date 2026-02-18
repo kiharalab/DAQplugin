@@ -50,6 +50,9 @@ class _API(BundleAPI):
         # Arrow window commands (arrowwin)
         elif ci.name == "daq arrowwin":
             func, desc = cmd.daq_arrowwin, cmd.daq_arrowwin_desc
+        # Clear DAQ restraints command
+        elif ci.name == "daq clearrestraints":
+            func, desc = cmd.daq_clearrestraints, cmd.daq_clearrestraints_desc
 
         else:
             raise ValueError(f"Unknown command: {ci.name}")

@@ -604,6 +604,34 @@ class DAQTool(ToolInstance):
         row.addWidget(self.aw_maxrs_spin)
         lay_arrow.addLayout(row)
 
+        # ISOLDE restraints options
+        row = QHBoxLayout()
+
+        self.aw_apply_isolde_cb = QCheckBox("Apply ISOLDE restraints", root)
+        self.aw_apply_isolde_cb.setToolTip("If checked, add ISOLDE position restraints based on residue mapping")
+        self.aw_apply_isolde_cb.setChecked(False)
+        row.addWidget(self.aw_apply_isolde_cb)
+
+        spring_label = QLabel("spring:", root)
+        spring_label.setToolTip("ISOLDE position restraint spring constant")
+        row.addWidget(spring_label)
+
+        self.aw_spring_spin = QDoubleSpinBox(root)
+        self.aw_spring_spin.setDecimals(0)
+        self.aw_spring_spin.setRange(0.0, 1e6)
+        self.aw_spring_spin.setValue(1500.0)
+        self.aw_spring_spin.setSingleStep(100.0)
+        self.aw_spring_spin.setEnabled(False)  # enabled only when checkbox is on
+        row.addWidget(self.aw_spring_spin)
+
+        def _sync_isolde_opts():
+            self.aw_spring_spin.setEnabled(self.aw_apply_isolde_cb.isChecked())
+
+        self.aw_apply_isolde_cb.toggled.connect(_sync_isolde_opts)
+
+        lay_arrow.addLayout(row)
+
+
         # Buttons
         row = QHBoxLayout()
         btn_arrow = QPushButton("Draw Arrows", root)
@@ -615,6 +643,12 @@ class DAQTool(ToolInstance):
         btn_arrow_clear.setToolTip("Remove all ArrowWin cones by deleting the group model")
         btn_arrow_clear.clicked.connect(self._clear_arrowwin_group)
         row.addWidget(btn_arrow_clear)
+
+        btn_clear_rest = QPushButton("Clear DAQ restraints", root)
+        btn_clear_rest.setToolTip("Disable DAQ-created ISOLDE position restraints (only those created by DAQ arrowwin)")
+        btn_clear_rest.clicked.connect(self._clear_daq_restraints)
+        row.addWidget(btn_clear_rest)
+
         lay_arrow.addLayout(row)
 
         main.addWidget(box_arrow)
@@ -830,6 +864,14 @@ class DAQTool(ToolInstance):
         cmd += f" max_radius_scale {float(self.aw_maxrs_spin.value()):.3f}"
         cmd += f" group_name \"DAQ Arrows\""
 
+        # ISOLDE restraints
+        if hasattr(self, "aw_apply_isolde_cb") and self.aw_apply_isolde_cb.isChecked():
+            cmd += " apply_isolde_restraints true"
+            cmd += f" spring_constant {float(self.aw_spring_spin.value()):.1f}"
+        else:
+            cmd += " apply_isolde_restraints false"
+
+
         self.session.logger.info(f"Running: {cmd}")
         run(self.session, cmd, log=False)
         # cache group model by name (top-level) after command runs
@@ -865,3 +907,15 @@ class DAQTool(ToolInstance):
             self.session.logger.info(f"Removed Arrow group: '{name}' ({removed} model(s))")
         else:
             self.session.logger.info(f"Arrow group not found: '{name}'")
+
+    def _clear_daq_restraints(self):
+        """Clear (disable) DAQ-created ISOLDE restraints for selected structure."""
+        st_tok = self._structure_token_or_none()
+        if st_tok is None:
+            self.session.logger.error("Clear DAQ restraints requires a Structure selected in Inputs.")
+            return
+
+        cmd = f"daq clearrestraints {st_tok}"
+        self.session.logger.info(f"Running: {cmd}")
+        run(self.session, cmd, log=False)
+
