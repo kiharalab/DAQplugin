@@ -171,8 +171,8 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
         raise ValueError(f"Expected (N,32) numpy file; got {arr.shape}")
     pts  = arr[:, :3].astype(np.float32)
     aa   = arr[:, 3:23].astype(np.float32)
-    atom = arr[:, 23:29]
-    ss3 = arr[:, 29:32]  # SS : 0,1,2 = helix, sheet, coil
+    atom = arr[:, 23:29].astype(np.float32)
+    ss3 = arr[:, 29:32].astype(np.float32)  # SS : 0,1,2 = helix, sheet, coil
 
     key = (npy_path, os.path.getmtime(npy_path), pts.shape[0])
     tree = _KDTREE_CACHE.get(key)
@@ -189,11 +189,14 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
         return
 
     q = _residue_coords(residues, atom_name=atom_name, use_scene=True)  # (M,3)
-    aa_mean, has_nbr = _aggregate(pts, aa, q, k=k, radius=radius, tree=tree)
-    atom_mean, has_nbr = _aggregate(pts, atom, q, k=k, radius=radius, tree=tree)
-    ss_mean, has_nbr  = _aggregate(pts, ss3,  q, k=k, radius=radius, tree=tree)
+
+    #aa_mean, has_nbr = _aggregate(pts, aa, q, k=k, radius=radius, tree=tree)
+    #atom_mean, has_nbr = _aggregate(pts, atom, q, k=k, radius=radius, tree=tree)
+    #ss_mean, has_nbr  = _aggregate(pts, ss3,  q, k=k, radius=radius, tree=tree)
+
     # metric
     if metric == "aa_score":
+        aa_mean, has_nbr = _aggregate(pts, aa, q, k=k, radius=radius, tree=tree)
         # 残基のAAタイプに対応する列だけを抽出
         names = np.array([n.upper() for n in residues.names], dtype=object)  # (R,)
         idx = np.array([AA_INDEX.get(n, -1) for n in names], dtype=int)      # (R,)
@@ -206,13 +209,16 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
         #for a, b, c,me in zip(scal,names,idx,aa_mean):
         #    print(a,b,c,me)
     elif metric.startswith("aa_conf:"):
+        aa_mean, has_nbr = _aggregate(pts, aa, q, k=k, radius=radius, tree=tree)
         aa3 = metric.split(":",1)[1].upper()
         j = AA20.index(aa3)
         scal = aa_mean[:, j]
     elif metric == "atom_score":
-        j = ATOM_TYPES6.index("CA")
+        atom_mean, has_nbr = _aggregate(pts, atom, q, k=k, radius=radius, tree=tree)
+        j = ATOM_TYPES6.index(atom_name) #index: 2 : CA
         scal = atom_mean[:, j]
     elif metric == "ss_score":
+        ss_mean, has_nbr  = _aggregate(pts, ss3,  q, k=k, radius=radius, tree=tree)
         # ss3 の列順を [HELIX, STRAND, COIL] と仮定（必要なら並べ替え）
         scal = np.full((len(residues),), np.nan, dtype=np.float32)
 
@@ -246,8 +252,6 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
 
     # atoms
     ats.bfactors = bf_vals
-    # --- 追加ここまで ---
-
 
     from chimerax.core.colors import Colormap, Color
     
