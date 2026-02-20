@@ -1,41 +1,17 @@
 # vim: set expandtab shiftwidth=4 softtabstop=4:
 import numpy as np
 from chimerax.core.commands import (CmdDesc, StringArg, IntArg, BoolArg,
-                                    ColormapArg, FloatArg, ModelArg)
+                                    ColormapArg, FloatArg, ModelArg,run)
 
 from .util import _residue_coords
 
 _KDTREE_CACHE = {}  # key -> cKDTree
+_NPY_CACHE = {}   # keep only one entry, like _KDTREE_CACHE
+
 # Session Monitor
 _MON = {}  # (session, model.id_string) -> dict
 '''
 
-
-def _residue_coords(residues, atom_name="CA", use_scene=True):
-    """
-    residues の座標を 1 残基 1 点で返す。
-    use_scene=True: including transform, scene coordinates
-    use_scene=False: original coord
-    """
-    coords = []
-    for r in residues:
-        a = r.find_atom(atom_name)
-        if a is not None:
-            if use_scene:
-                coords.append(a.scene_coord)   # ★ ここを coord → scene_coord
-            else:
-                coords.append(a.coord)
-        else:
-            ats = r.atoms
-            if len(ats):
-                if use_scene:
-                    xyz = ats.scene_coords     # ★ ここを coords → scene_coords
-                else:
-                    xyz = ats.coords
-                coords.append(xyz.mean(axis=0))
-            else:
-                coords.append((0, 0, 0))
-    return np.asarray(coords, dtype=np.float32)
 '''
 
 # kNN search
@@ -166,22 +142,34 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
     AA_INDEX = {aa:i for i,aa in enumerate(AA20)}
     ATOM_TYPES6 = ["Other","N","CA","C","O","CB"]  #（index 0..5）
 
-    arr = np.load(npy_path)
-    if arr.ndim != 2 or arr.shape[1] != 32:
-        raise ValueError(f"Expected (N,32) numpy file; got {arr.shape}")
-    pts  = arr[:, :3].astype(np.float32)
-    aa   = arr[:, 3:23].astype(np.float32)
-    atom = arr[:, 23:29].astype(np.float32)
-    ss3 = arr[:, 29:32].astype(np.float32)  # SS : 0,1,2 = helix, sheet, coil
-
-    key = (npy_path, os.path.getmtime(npy_path), pts.shape[0])
-    tree = _KDTREE_CACHE.get(key)
-
-    if tree is None:
+    mtime = os.path.getmtime(npy_path)
+    npy_key = (npy_path, mtime)
+    cached = _NPY_CACHE.get(npy_key)
+    if cached is None:
+        #load numpy file
+        print(f"Loading numpy file: {npy_path}")
+        arr = np.load(npy_path)
+        if arr.ndim != 2 or arr.shape[1] != 32:
+            raise ValueError(f"Expected (N,32) numpy file; got {arr.shape}")
+        pts  = arr[:, :3].astype(np.float32)
+        aa   = arr[:, 3:23].astype(np.float32)
+        atom = arr[:, 23:29].astype(np.float32)
+        ss3 = arr[:, 29:32].astype(np.float32)  # SS : 0,1,2 = helix, sheet, coil
+        
         from scipy.spatial import cKDTree
         tree = cKDTree(pts)
-        _KDTREE_CACHE.clear()          # keep only one tree
-        _KDTREE_CACHE[key] = tree
+
+        _NPY_CACHE.clear()  # keep only one entry
+        _NPY_CACHE[npy_key] = {
+            "pts": pts,
+            "aa": aa,
+            "atom": atom,
+            "ss3": ss3,
+            "tree": tree
+        }
+    else:
+        pts, aa, atom, ss3 = cached["pts"], cached["aa"], cached["atom"], cached["ss3"]
+        tree = cached["tree"]
 
     residues = model.residues
     if residues is None or len(residues) == 0:
@@ -218,6 +206,12 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
         j = ATOM_TYPES6.index(atom_name) #index: 2 : CA
         scal = atom_mean[:, j]
     elif metric == "ss_score":
+        #Ensure DSSP has been run to assign secondary structure types to residues
+        try:
+            run(session, f"dssp #{model.id_string}")
+        except Exception as e:
+            session.logger.warning(f"DSSP failed: {e}. Secondary structure types may be unavailable.")
+
         ss_mean, has_nbr  = _aggregate(pts, ss3,  q, k=k, radius=radius, tree=tree)
         # ss3 の列順を [HELIX, STRAND, COIL] と仮定（必要なら並べ替え）
         scal = np.full((len(residues),), np.nan, dtype=np.float32)
