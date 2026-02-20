@@ -190,14 +190,21 @@ def draw_arrow_from_mapping(
         ins = getattr(res, "insertion_code", "") or ""
         return f"{name_prefix}_{stid}_{ch}_{num}{ins}"
 
-    def score_to_white_green(score, vmax=1.0, vmin=0.0):
+    def score_to_white_orange(score, vmax=1.0, vmin=0.0):
         if score <= 0:
             return "#ffffff"
+
         x = min((score - vmin) / (vmax - vmin), 1.0) if vmax > vmin else 0.0
-        r = 1.0 - x; g = 1.0; b = 1.0 - x
+
+        # orange target = (1.0, 0.55, 0.0)
+        r = 1.0
+        g = 1.0 - 0.45 * x
+        b = 1.0 - 1.0 * x
+
         return "#{:02x}{:02x}{:02x}".format(int(r*255), int(g*255), int(b*255))
 
-    color_hex = score_to_white_green(avg_improve, vmax=vmax_color, vmin=min_improvement)
+
+    color_hex = score_to_white_orange(avg_improve, vmax=vmax_color, vmin=min_improvement)
 
     x = min(avg_improve / float(vmax_radius), 1.0)
     scale = float(min_radius_scale) + x * (float(max_radius_scale) - float(min_radius_scale))

@@ -10,9 +10,10 @@ _NPY_CACHE = {}   # keep only one entry, like _KDTREE_CACHE
 
 # Session Monitor
 _MON = {}  # (session, model.id_string) -> dict
-'''
 
-'''
+# For recolor: cache loaded numpy data and KDTree to avoid reloading/rebuilding on every frame
+_RECOLOR_CACHE = {}  # keep only one
+
 
 # kNN search
 # Add tree
@@ -133,7 +134,8 @@ def _window_average_scal(residues, scal, half_window=9):
 
 
 
-def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, clamp_max, radius=3.0, halfwindow=9):
+def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, clamp_max, radius=3.0, halfwindow=9, 
+             eps=0.1, monitor=False):
     AA20 = [
     "ALA","VAL","PHE","PRO","MET","ILE","LEU","ASP","GLU","LYS",
     "ARG","SER","THR","TYR","HIS","CYS","ASN","TRP","GLN","GLY"
@@ -151,11 +153,16 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
         arr = np.load(npy_path)
         if arr.ndim != 2 or arr.shape[1] != 32:
             raise ValueError(f"Expected (N,32) numpy file; got {arr.shape}")
-        pts  = arr[:, :3].astype(np.float32)
-        aa   = arr[:, 3:23].astype(np.float32)
-        atom = arr[:, 23:29].astype(np.float32)
-        ss3 = arr[:, 29:32].astype(np.float32)  # SS : 0,1,2 = helix, sheet, coil
-        
+        #pts  = arr[:, :3].astype(np.float32)
+        #aa   = arr[:, 3:23].astype(np.float32)
+        #atom = arr[:, 23:29].astype(np.float32)
+        #ss3 = arr[:, 29:32].astype(np.float32)  # SS : 0,1,2 = helix, sheet, coil
+        # contiguous + float32
+        pts  = np.ascontiguousarray(arr[:, :3],   dtype=np.float32)
+        aa   = np.ascontiguousarray(arr[:, 3:23], dtype=np.float32)
+        atom = np.ascontiguousarray(arr[:, 23:29],dtype=np.float32)
+        ss3  = np.ascontiguousarray(arr[:, 29:32],dtype=np.float32)
+
         from scipy.spatial import cKDTree
         tree = cKDTree(pts)
 
@@ -178,9 +185,45 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
 
     q = _residue_coords(residues, atom_name=atom_name, use_scene=True)  # (M,3)
 
-    #aa_mean, has_nbr = _aggregate(pts, aa, q, k=k, radius=radius, tree=tree)
-    #atom_mean, has_nbr = _aggregate(pts, atom, q, k=k, radius=radius, tree=tree)
-    #ss_mean, has_nbr  = _aggregate(pts, ss3,  q, k=k, radius=radius, tree=tree)
+    # ---- cache key: same npy and paramaters ----
+    
+    param_key = (npy_path, mtime, k, float(radius), metric, atom_name, halfwindow,
+                None if clamp_min is None else float(clamp_min),
+                None if clamp_max is None else float(clamp_max),
+                model.id_string)
+
+    model_cache = _RECOLOR_CACHE.get(param_key)
+
+    if model_cache is not None:
+        prev_q = model_cache["q"]
+        # shape check: if the number of residues or atom_name changes, we cannot reuse the cache
+        if prev_q.shape == q.shape:
+            # max movement
+            d2 = np.max(np.sum((q - prev_q)**2, axis=1))
+            if d2 <= float(eps)*float(eps):
+                if monitor:
+                    ri = model_cache["res_idx"]
+                    changed = False
+
+                    # ribbon colors check (sampled)
+                    if ri is not None and len(ri) > 0:
+                        cur_res = residues.ribbon_colors
+                        ref_res = model_cache["res_rgba"]
+                        if cur_res is None or cur_res.shape != ref_res.shape:
+                            changed = True
+                        elif not np.array_equal(cur_res[ri], ref_res[ri]):
+                            changed = True
+                    if changed: #color changed by someone
+                        residues.ribbon_colors = model_cache["res_rgba"]
+                        residues.atoms.colors  = model_cache["atom_rgba"]
+                        residues.atoms.bfactors = model_cache["bf_vals"]
+
+                    return  # skip update if monitor and no significant movement
+                
+                residues.ribbon_colors = model_cache["res_rgba"]
+                residues.atoms.colors  = model_cache["atom_rgba"]
+                residues.atoms.bfactors = model_cache["bf_vals"]
+                return
 
     # metric
     if metric == "aa_score":
@@ -298,6 +341,22 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
     )
     ats.colors = atom_rgba
 
+    #color cache:
+    max_res_samp = 128
+    R = len(residues)
+
+    res_idx = np.linspace(0, R-1, min(R, max_res_samp)).astype(np.int32) if R else np.array([], np.int32)
+
+    # bf_vals, res_rgba, atom_rgba
+    _RECOLOR_CACHE.clear()  # keep only one
+    _RECOLOR_CACHE[param_key] = {
+        "q": q.copy(),  # 次回比較用
+        "bf_vals": bf_vals.copy(),
+        "res_rgba": res_rgba.copy(),
+        "atom_rgba": atom_rgba.copy(),
+        "res_idx": res_idx.copy()
+    }
+
     session.logger.status(
         f"daqcolor: colored {len(residues)} residues (k={k}, metric={metric})",
         color="blue"
@@ -355,7 +414,7 @@ def daqcolor_monitor(session, model, *, npy_path=None, k=1, colormap=None,
                 # Throttle updates based on interval
                 current_time = time.time()
                 if current_time - last_update[0] >= interval:
-                    _recolor(session, model, npy_path, k, colormap, metric, atom_name, clamp_min, clamp_max, halfwindow=half_window)
+                    _recolor(session, model, npy_path, k, colormap, metric, atom_name, clamp_min, clamp_max, halfwindow=half_window, monitor=True)
                     last_update[0] = current_time
             except Exception as e:
                 session.logger.warning(f"daqcolor monitor error: {e}")
