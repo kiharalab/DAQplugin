@@ -38,9 +38,9 @@ def precompute_chain_nn_and_scores(residues_all, kdtree, aa_scores):
 
     for j, r in enumerate(residues_all):
         x0 = _residue_coords([r], atom_name="CA", use_scene=True)[0]
-        if x0 is None:
+        if not np.all(np.isfinite(x0)):
             continue
-        ca_xyz[j] = x0.astype(float)
+        ca_xyz[j] = np.asarray(x0, dtype=float)
         has_ca[j] = True
 
     nn_idx = np.full(L, -1, dtype=int)

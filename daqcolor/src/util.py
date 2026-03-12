@@ -11,6 +11,11 @@ def _residue_coords(residues, atom_name="CA", use_scene=True):
             else:
                 coords.append(a.coord)
         else:
+            # No CA Atom?
+            if atom_name == "CA":
+                coords.append((np.nan, np.nan, np.nan))
+                continue
+
             ats = r.atoms
             if len(ats):
                 if use_scene:
@@ -19,6 +24,7 @@ def _residue_coords(residues, atom_name="CA", use_scene=True):
                     xyz = ats.coords
                 coords.append(xyz.mean(axis=0))
             else:
-                coords.append((0, 0, 0))
+                coords.append((np.nan, np.nan, np.nan))
+
 
     return np.asarray(coords, dtype=np.float32)

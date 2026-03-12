@@ -184,7 +184,7 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
         return
 
     q = _residue_coords(residues, atom_name=atom_name, use_scene=True)  # (M,3)
-
+    valid_ca = np.isfinite(q[:, 0])
     # ---- cache key: same npy and paramaters ----
     
     param_key = (npy_path, mtime, k, float(radius), metric, atom_name, halfwindow,
@@ -199,7 +199,14 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
         # shape check: if the number of residues or atom_name changes, we cannot reuse the cache
         if prev_q.shape == q.shape:
             # max movement
-            d2 = np.max(np.sum((q - prev_q)**2, axis=1))
+            same_valid = np.isfinite(q[:, 0]) & np.isfinite(prev_q[:, 0])
+            if np.any(same_valid):
+                diff = q[same_valid] - prev_q[same_valid]
+                d2 = np.max(np.sum(diff * diff, axis=1))
+            else:
+                d2 = np.inf
+            #d2 = np.max(np.sum((q - prev_q)**2, axis=1))
+            
             if d2 <= float(eps)*float(eps):
                 if monitor:
                     ri = model_cache["res_idx"]
@@ -228,7 +235,7 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
     # metric
     if metric == "aa_score":
         aa_mean, has_nbr = _aggregate(pts, aa, q, k=k, radius=radius, tree=tree)
-        # 残基のAAタイプに対応する列だけを抽出
+        # extract residues with neighbors
         names = np.array([n.upper() for n in residues.names], dtype=object)  # (R,)
         idx = np.array([AA_INDEX.get(n, -1) for n in names], dtype=int)      # (R,)
         scal = np.full((len(residues),), np.nan, dtype=np.float32)
@@ -236,9 +243,7 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
         if np.any(valid):
             rows = np.nonzero(valid)[0]
             scal[rows] = aa_mean[rows, idx[valid]]
-        #scal = aa_mean.max(axis=1)
-        #for a, b, c,me in zip(scal,names,idx,aa_mean):
-        #    print(a,b,c,me)
+
     elif metric.startswith("aa_conf:"):
         aa_mean, has_nbr = _aggregate(pts, aa, q, k=k, radius=radius, tree=tree)
         aa3 = metric.split(":",1)[1].upper()
@@ -247,7 +252,10 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
     elif metric == "atom_score":
         atom_mean, has_nbr = _aggregate(pts, atom, q, k=k, radius=radius, tree=tree)
         j = ATOM_TYPES6.index(atom_name) #index: 2 : CA
-        scal = atom_mean[:, j]
+        #scal = atom_mean[:, j]
+        scal = np.full((len(residues),), np.nan, dtype=np.float32)
+        if np.any(valid_ca):
+            scal[valid_ca] = atom_mean[valid_ca, j]
     elif metric == "ss_score":
         #Ensure DSSP has been run to assign secondary structure types to residues
         try:
@@ -256,9 +264,9 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
             session.logger.warning(f"DSSP failed: {e}. Secondary structure types may be unavailable.")
 
         ss_mean, has_nbr  = _aggregate(pts, ss3,  q, k=k, radius=radius, tree=tree)
-        # ss3 の列順を [HELIX, STRAND, COIL] と仮定（必要なら並べ替え）
+        # ss3 has [Helix, Strand, COIL or unknown]
         scal = np.full((len(residues),), np.nan, dtype=np.float32)
-
+        
         # 残基ごとに列indexを作る
         idx = np.empty((len(residues),), dtype=np.int32)
         for i, r in enumerate(residues):
@@ -269,10 +277,23 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
             else:
                 idx[i] = 2  # COIL or unknown
 
-        scal[:] = ss_mean[np.arange(len(residues)), idx]
+        #scal[:] = ss_mean[np.arange(len(residues)), idx]
+        if np.any(valid_ca):
+            rows = np.nonzero(valid_ca)[0]
+            scal[rows] = ss_mean[rows, idx[rows]]
     else:
         raise ValueError(f"Unknown metric: {metric}")
 
+    # ---- DAQ total score (before window averaging) ----
+    total_daq = np.nansum(scal)
+    mean_daq  = np.nanmean(scal)
+    n_res     = np.sum(np.isfinite(scal))
+
+    msg = f"DAQ raw sum={total_daq:.3f}  mean={mean_daq:.3f}  N={n_res}"
+    session.logger.info(msg)
+    session.logger.status(msg, color="blue")
+
+    # ---- DAQ window average score ----
     scal = _window_average_scal(residues, scal, half_window=halfwindow)
 
     # --- Input score into B-factor ---
@@ -358,7 +379,7 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
     }
 
     session.logger.status(
-        f"daqcolor: colored {len(residues)} residues (k={k}, metric={metric})",
+        f"daqcolor: colored {len(residues)} residues (k={k}, metric={metric}), DAQsum={total_daq:.3f}  mean={mean_daq:.3f}  N={n_res}",
         color="blue"
     )
     
