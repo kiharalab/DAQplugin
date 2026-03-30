@@ -331,9 +331,8 @@ def daq_clearrestraints(session, structure):
     """
     Clear DAQ-created ISOLDE position restraints (tracked in session._daq_restrained_atoms).
     """
-    # daq_arrowwin() で一度だけチェック、という設計は維持しつつ、
-    # clearrestraints は単独コマンドなのでここで pr_mgr を取得します
-    pr_mgr = _get_isolde_pr_mgr(session, structure)  # 既に作ったユーティリティ
+
+    pr_mgr = _get_isolde_pr_mgr(session, structure)  # 
     if pr_mgr is None:
         return 0
     deleted = clear_daq_position_restraints(session, structure, pr_mgr)

@@ -309,7 +309,7 @@ class DAQTool(ToolInstance):
         scroll_widget = QWidget(scroll)
         scroll.setWidget(scroll_widget)
 
-        # 以降の UI 要素はこの main に積む（既存コードをほぼ変更せずに済む）
+        # Main layout inside scroll area
         main = QVBoxLayout(scroll_widget)
         main.setContentsMargins(0, 0, 0, 0)
         main.setSpacing(6)        
