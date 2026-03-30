@@ -634,7 +634,7 @@ class DAQTool(ToolInstance):
 
         # Buttons
         row = QHBoxLayout()
-        btn_arrow = QPushButton("Draw Arrows", root)
+        btn_arrow = QPushButton("Show Shift Direction", root)
         btn_arrow.setToolTip("Draw backbone-shift suggestion cones. If residues are selected, only selected residues are processed; otherwise the whole model is processed")
         btn_arrow.clicked.connect(self._run_arrowwin)
         row.addWidget(btn_arrow)
