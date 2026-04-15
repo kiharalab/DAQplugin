@@ -15,6 +15,23 @@ _MON = {}  # (session, model.id_string) -> dict
 _RECOLOR_CACHE = {}  # keep only one
 
 
+def _log_compute_timings(session, timings):
+    if not timings:
+        return
+
+    input_time = float(timings.get("input_data_processing", 0.0))
+    compute_time = float(timings.get("daq_computing", 0.0))
+    assign_time = float(timings.get("score_assignment", 0.0))
+    total_time = input_time + compute_time + assign_time
+
+    session.logger.info("Computation time summary:")
+    session.logger.info(f"  1. Input data processing: {input_time:.2f} s")
+    session.logger.info(f"  2. DAQ computing: {compute_time:.2f} s")
+    session.logger.info(f"  3. Score assignment: {assign_time:.2f} s")
+    session.logger.info(f"  Total: {total_time:.2f} s")
+    session.logger.status(f"DAQ timing total: {total_time:.2f} s", color="blue")
+
+
 # kNN search
 # Add tree
 def _knn_idx(db_pts, q_pts, k=8, radius=None, chunk=2000, tree=None):
@@ -645,7 +662,7 @@ def daqscore_compute_grid(session, map_input, contour, *, structure=None, output
     session.logger.info(f"  Contour: {contour}, Stride: {stride}")
     
     try:
-        points, scores, actual_output_path = compute_daq_scores(
+        points, scores, actual_output_path, timings = compute_daq_scores(
             session,
             map_source,
             output_path=output,
@@ -662,6 +679,7 @@ def daqscore_compute_grid(session, map_input, contour, *, structure=None, output
         session.logger.info(f"DAQ score computation completed!")
         session.logger.info(f"  Points: {points.shape[0]}")
         session.logger.info(f"  Output saved to: {saved_path}")
+        _log_compute_timings(session, timings)
 
         # Apply coloring if structure specified
         if structure is not None:
@@ -789,7 +807,7 @@ def daqscore_compute_pdb(session, map_input, *, structure=None, output=None,
 
     try:
         # Compute DAQ scores at heavy atom positions
-        points, scores, actual_output_path = compute_daq_scores_pdb(
+        points, scores, actual_output_path, timings = compute_daq_scores_pdb(
             session,
             map_source,
             structure,
@@ -804,6 +822,7 @@ def daqscore_compute_pdb(session, map_input, *, structure=None, output=None,
         session.logger.info(f"DAQ score computation (PDB mode) completed!")
         session.logger.info(f"  Heavy atoms: {points.shape[0]}")
         session.logger.info(f"  Output saved to: {saved_path}")
+        _log_compute_timings(session, timings)
 
         # Apply coloring to structure if requested
         if apply_color:

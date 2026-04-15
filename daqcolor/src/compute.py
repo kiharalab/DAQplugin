@@ -9,6 +9,7 @@ using ChimeraX's native volume handling and ONNX Runtime for inference.
 import numpy as np
 from pathlib import Path
 from typing import Tuple, Optional, Union
+from time import perf_counter
 
 # Handle imports for both ChimeraX plugin and standalone use
 try:
@@ -473,7 +474,7 @@ def compute_daq_scores(
     max_points: int = 500000,
     model_path: Optional[str] = None,
     progress_callback: Optional[callable] = None,
-) -> Tuple[np.ndarray, np.ndarray, Optional[Path]]:
+) -> Tuple[np.ndarray, np.ndarray, Optional[Path], dict]:
     """
     Full DAQ score computation pipeline.
 
@@ -511,8 +512,15 @@ def compute_daq_scores(
         else:
             session.logger.status(f"{msg} ({current}/{total})")
 
+    timings = {
+        "input_data_processing": 0.0,
+        "daq_computing": 0.0,
+        "score_assignment": 0.0,
+    }
+
     # Step 1: Unify and resample volume
     update_progress(0, 6, "Unifying and resampling volume...")
+    t0 = perf_counter()
 
     # Unify map first if needed
     if isinstance(map_input, (str, Path)):
@@ -569,8 +577,12 @@ def compute_daq_scores(
     update_progress(3, 6, f"Extracting {n_points} patches...")
     patches = extract_patches(data_norm, points, origin, step, patch_size=11)
 
+    t1 = perf_counter()
+    timings["input_data_processing"] = t1 - t0
+
     # Step 5: Run ONNX inference
     update_progress(4, 6, "Loading model and running inference...")
+    t2 = perf_counter()
     model = load_model(model_path)
 
     session.logger.info(f"Running inference on {n_points} patches...")
@@ -579,12 +591,17 @@ def compute_daq_scores(
         update_progress(4, 6, f"Inference: {current}/{total} patches")
 
     aa_probs, atom_probs, ss_probs = model.predict_batched(patches, batch_size=batch_size, progress_callback=inference_progress)
+    t3 = perf_counter()
+    timings["daq_computing"] = t3 - t2
 
     # Step 6: Compute log-ratio scores (reference filtered by original contour)
     update_progress(5, 6, "Computing DAQ scores...")
+    t4 = perf_counter()
     ref_points = np.sum(density >= contour)
     session.logger.info(f"Reference points: {ref_points}/{n_points} (density >= {contour})")
     scores = compute_log_ratio_scores(points, aa_probs, atom_probs, ss_probs, density, contour)
+    t5 = perf_counter()
+    timings["score_assignment"] = t5 - t4
 
     # Save results if output path provided
     actual_output_path = None
@@ -609,7 +626,7 @@ def compute_daq_scores(
 
     update_progress(6, 6, "Done!")
 
-    return points, scores, actual_output_path
+    return points, scores, actual_output_path, timings
 
 
 def get_heavy_atom_coords(structure) -> np.ndarray:
@@ -694,7 +711,7 @@ def compute_daq_scores_pdb(
     batch_size: int = 512,
     model_path: Optional[str] = None,
     progress_callback: Optional[callable] = None,
-) -> Tuple[np.ndarray, np.ndarray, Optional[Path]]:
+) -> Tuple[np.ndarray, np.ndarray, Optional[Path], dict]:
     """
     Compute DAQ scores for PDB structure (heavy atom positions).
 
@@ -731,8 +748,15 @@ def compute_daq_scores_pdb(
         else:
             session.logger.status(f"{msg} ({current}/{total})")
 
+    timings = {
+        "input_data_processing": 0.0,
+        "daq_computing": 0.0,
+        "score_assignment": 0.0,
+    }
+
     # Step 1: Unify and resample volume
     update_progress(0, 6, "Unifying and resampling volume...")
+    t0 = perf_counter()
 
     # Unify map first if needed
     if isinstance(map_input, (str, Path)):
@@ -786,8 +810,12 @@ def compute_daq_scores_pdb(
     update_progress(3, 6, f"Extracting {n_points} patches...")
     patches = extract_patches(data_norm, points, origin, step, patch_size=11)
 
+    t1 = perf_counter()
+    timings["input_data_processing"] = t1 - t0
+
     # Step 5: Run ONNX inference
     update_progress(4, 6, "Loading model and running inference...")
+    t2 = perf_counter()
     model = load_model(model_path)
 
     session.logger.info(f"Running inference on {n_points} patches...")
@@ -796,10 +824,15 @@ def compute_daq_scores_pdb(
         update_progress(4, 6, f"Inference: {current}/{total} patches")
 
     aa_probs, atom_probs, ss_probs = model.predict_batched(patches, batch_size=batch_size, progress_callback=inference_progress)
+    t3 = perf_counter()
+    timings["daq_computing"] = t3 - t2
 
     # Step 6: Compute log-ratio scores (PDB version uses all points for reference)
     update_progress(5, 6, "Computing DAQ scores...")
+    t4 = perf_counter()
     scores = compute_log_ratio_scores_pdb(points, aa_probs, atom_probs, ss_probs)
+    t5 = perf_counter()
+    timings["score_assignment"] = t5 - t4
 
     # Save results if output path provided
     actual_output_path = None
@@ -824,4 +857,4 @@ def compute_daq_scores_pdb(
 
     update_progress(6, 6, "Done!")
 
-    return points, scores, actual_output_path
+    return points, scores, actual_output_path, timings

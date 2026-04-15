@@ -1,5 +1,5 @@
 <BundleInfo name="ChimeraX-DAQplugin"
-            version="0.13.51" package="chimerax.daqcolor"
+            version="0.13.6" package="chimerax.daqcolor"
             minSessionVersion="1" maxSessionVersion="1">
 
   <Author>Genki Terashi</Author>
