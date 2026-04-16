@@ -47,7 +47,8 @@ DAQplugin/
 - Tools > Validation > DAQplugin
 
 ## Use GUI
-<img src="img/gui.png" width="600">
+<img src="img/gui1.png" width="300">
+<img src="img/gui2.png" width="300">
 
 - DAQplugin GUI supports both grid-based DAQ computation from cryo-EM maps and structure-based DAQ computation (original DAQ style), as well as real-time coloring and monitoring.
 
