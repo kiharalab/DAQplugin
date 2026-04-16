@@ -7,13 +7,70 @@ from chimerax.core.commands import run
 from Qt.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QDoubleSpinBox,
     QSpinBox, QPushButton, QCheckBox, QGroupBox, QFileDialog, QComboBox,
-    QToolButton, QFrame, QSizePolicy, QMessageBox, QGridLayout, QTabWidget
+    QToolButton, QFrame, QSizePolicy, QMessageBox, QGridLayout, QTabWidget,
+    QTableView, QAbstractItemView, QHeaderView
 )
 
-from Qt.QtCore import Qt
+from Qt.QtCore import Qt, QAbstractTableModel
 
 from Qt.QtGui import QDesktopServices
 from Qt.QtCore import QUrl, QTimer
+
+from .cmd import _compute_residue_scores
+
+
+class ResidueTableModel(QAbstractTableModel):
+    HEADERS = ["Chain ID", "Residue ID", "Amino Acid", "DAQ Score"]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._rows = []
+
+    def rowCount(self, parent=None):
+        return 0 if parent and parent.isValid() else len(self._rows)
+
+    def columnCount(self, parent=None):
+        return 0 if parent and parent.isValid() else len(self.HEADERS)
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid():
+            return None
+
+        row = self._rows[index.row()]
+        col = index.column()
+
+        if role == Qt.DisplayRole:
+            return row["display"][col]
+        if role == Qt.TextAlignmentRole and col == 3:
+            return int(Qt.AlignRight | Qt.AlignVCenter)
+        if role == Qt.UserRole:
+            return row["sort"][col]
+        if role == Qt.UserRole + 1:
+            return row["residue_spec"]
+        return None
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if role != Qt.DisplayRole:
+            return None
+        if orientation == Qt.Horizontal and 0 <= section < len(self.HEADERS):
+            return self.HEADERS[section]
+        return str(section + 1)
+
+    def set_rows(self, rows):
+        self.beginResetModel()
+        self._rows = list(rows)
+        self.endResetModel()
+
+    def clear(self):
+        self.set_rows([])
+
+    def sort(self, column, order=Qt.AscendingOrder):
+        if not self._rows or not (0 <= column < len(self.HEADERS)):
+            return
+        reverse = order == Qt.DescendingOrder
+        self.layoutAboutToBeChanged.emit()
+        self._rows.sort(key=lambda row: row["sort"][column], reverse=reverse)
+        self.layoutChanged.emit()
 
 
 class CollapsibleSection(QWidget):
@@ -57,6 +114,7 @@ class DAQTool(ToolInstance):
     def __init__(self, session, tool_name):
         super().__init__(session, tool_name)
         self.display_name = "DAQplugin"
+        self._residue_table_cache = None
         
         self.tool_window = MainToolWindow(self, close_destroys=True)
 
@@ -398,6 +456,35 @@ class DAQTool(ToolInstance):
                 background: #272729;
                 color: #ffffff;
             }
+            QTableWidget, QTableView {
+                background: #111113;
+                color: #ffffff;
+                border: 1px solid #2f2f32;
+                border-radius: 12px;
+                gridline-color: #3a3a3d;
+                alternate-background-color: #1a1a1c;
+                selection-background-color: #2f6fed;
+                selection-color: #ffffff;
+                font-family: "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+                font-size: 13px;
+            }
+            QTableWidget::item, QTableView::item {
+                padding: 6px 8px;
+                border: none;
+            }
+            QHeaderView::section {
+                background: #1d1d1f;
+                color: #ffffff;
+                border: none;
+                border-right: 1px solid #3a3a3d;
+                border-bottom: 1px solid #3a3a3d;
+                padding: 8px 10px;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QHeaderView::section:last {
+                border-right: none;
+            }
             QComboBox::drop-down {
                 border: 0px;
                 width: 24px;
@@ -511,8 +598,8 @@ class DAQTool(ToolInstance):
             button.style().polish(button)
             return button
 
-        tabs = QTabWidget(root)
-        outer.addWidget(tabs, 1)
+        self.tabs = QTabWidget(root)
+        outer.addWidget(self.tabs, 1)
 
         main_tab = QWidget(root)
         main_tab.setProperty("section", "dark")
@@ -526,8 +613,15 @@ class DAQTool(ToolInstance):
         params_layout.setContentsMargins(12, 10, 12, 12)
         params_layout.setSpacing(8)
 
-        tabs.addTab(main_tab, "MAIN")
-        tabs.addTab(params_tab, "Parameters")
+        table_tab = QWidget(root)
+        table_tab.setProperty("section", "dark")
+        table_layout = QVBoxLayout(table_tab)
+        table_layout.setContentsMargins(12, 10, 12, 12)
+        table_layout.setSpacing(8)
+
+        self.tabs.addTab(main_tab, "MAIN")
+        self.tabs.addTab(params_tab, "Parameters")
+        self._table_tab_index = self.tabs.addTab(table_tab, "Residue Table")
 
         # ---- Main tab: inputs ----
         input_grid = QGridLayout()
@@ -937,6 +1031,47 @@ class DAQTool(ToolInstance):
         params_layout.addWidget(arrow_params_group)
         params_layout.addStretch(1)
 
+        table_header = QLabel("Per-Residue DAQ Scores", root)
+        table_header.setProperty("role", "title")
+        table_layout.addWidget(table_header)
+
+        table_status_row = QHBoxLayout()
+        table_status_row.setContentsMargins(0, 0, 0, 0)
+        table_status_row.setSpacing(8)
+
+        self.table_status_label = QLabel("Open this tab to load the current DAQ score table.", root)
+        self.table_status_label.setProperty("role", "caption")
+        table_status_row.addWidget(self.table_status_label, 1)
+
+        self.table_refresh_button = QPushButton("Refresh", root)
+        self.table_refresh_button.setProperty("variant", "secondary-gray")
+        self.table_refresh_button.setToolTip("Rebuild the residue table from the current structure and DAQ settings")
+        self.table_refresh_button.clicked.connect(self._refresh_residue_table)
+        self.table_refresh_button.style().unpolish(self.table_refresh_button)
+        self.table_refresh_button.style().polish(self.table_refresh_button)
+        table_status_row.addWidget(self.table_refresh_button, 0, Qt.AlignRight)
+
+        table_layout.addLayout(table_status_row)
+
+        self.residue_table_model = ResidueTableModel(root)
+        self.residue_table = QTableView(root)
+        self.residue_table.setModel(self.residue_table_model)
+        self.residue_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.residue_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.residue_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.residue_table.setAlternatingRowColors(True)
+        self.residue_table.setSortingEnabled(True)
+        self.residue_table.setUpdatesEnabled(True)
+        self.residue_table.verticalHeader().setDefaultSectionSize(26)
+        self.residue_table.verticalHeader().setVisible(False)
+        self.residue_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.residue_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.residue_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.residue_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.residue_table.horizontalHeader().setSortIndicator(1, Qt.AscendingOrder)
+        self.residue_table.clicked.connect(self._focus_clicked_residue)
+        table_layout.addWidget(self.residue_table, 1)
+
         # ---- Footer help link ----
         manual_url = "https://cxtoolshed.rbvi.ucsf.edu/apps/chimeraxdaqplugin"
         footer_row = QHBoxLayout()
@@ -962,6 +1097,191 @@ class DAQTool(ToolInstance):
 
         # initial refresh
         self._refresh_models()
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
+    def _on_tab_changed(self, index):
+        if index == getattr(self, "_table_tab_index", -1):
+            self._update_residue_table()
+
+    def _refresh_residue_table(self):
+        self._update_residue_table(force=True)
+
+    def _format_residue_id(self, residue):
+        ins_code = (getattr(residue, "insertion_code", "") or "").strip()
+        if ins_code:
+            return f"{residue.number}{ins_code}"
+        return str(residue.number)
+
+    def _residue_spec(self, structure, residue):
+        chain_id = (getattr(residue, "chain_id", "") or "").strip()
+        residue_id = self._format_residue_id(residue)
+        if chain_id:
+            return f"#{structure.id_string}/{chain_id}:{residue_id}"
+        return f"#{structure.id_string}:{residue_id}"
+
+    def _residue_sort_key(self, residue):
+        ins_code = (getattr(residue, "insertion_code", "") or "").strip()
+        return (int(getattr(residue, "number", 0)), ins_code)
+
+    def _set_table_status(self, text: str):
+        self.table_status_label.setText(text)
+
+    def _build_table_rows(self, structure, residues, scores):
+        rows = []
+        for residue, score in zip(residues, scores):
+            score_text = "NaN" if score != score else f"{float(score):.4f}"
+            rows.append({
+                "display": (
+                    getattr(residue, "chain_id", "") or "",
+                    self._format_residue_id(residue),
+                    (getattr(residue, "name", "") or "").upper(),
+                    score_text,
+                ),
+                "sort": (
+                    getattr(residue, "chain_id", "") or "",
+                    self._residue_sort_key(residue),
+                    (getattr(residue, "name", "") or "").upper(),
+                    float(score) if score == score else float("-inf"),
+                ),
+                "residue_spec": self._residue_spec(structure, residue),
+            })
+        return rows
+
+    def _table_cache_key(self, structure=None, npy=None, metric=None, k=None, half_window=None):
+        structure = structure or self._selected_structure()
+        if structure is None:
+            return None
+        return (
+            structure.id_string,
+            os.path.abspath(npy or self.load_edit.text().strip()),
+            metric or self._selected_metric(),
+            int(self.k_spin.value() if k is None else k),
+            int(self.hw_spin.value() if half_window is None else half_window),
+        )
+
+    def _store_residue_table_cache(self, residues, scores, source: str):
+        structure = self._selected_structure()
+        key = self._table_cache_key(structure=structure)
+        if key is None:
+            return
+        self._residue_table_cache = {
+            "key": key,
+            "rows": self._build_table_rows(structure, residues, scores),
+            "source": source,
+        }
+
+    def _capture_scores_from_structure_bfactors(self, structure):
+        if structure is None:
+            return
+        residues = structure.residues
+        scores = []
+        for residue in residues:
+            atoms = residue.atoms
+            if atoms is None or len(atoms) == 0:
+                scores.append(float("nan"))
+                continue
+            try:
+                bfactors = atoms.bfactors
+                if bfactors is None or len(bfactors) == 0:
+                    scores.append(float("nan"))
+                else:
+                    scores.append(float(bfactors[0]))
+            except Exception:
+                scores.append(float("nan"))
+        self._store_residue_table_cache(residues, scores, source="coloring")
+
+    def _get_cached_residue_table_data(self):
+        cache = self._residue_table_cache
+        key = self._table_cache_key()
+        if cache is None or key is None:
+            return None
+        if cache.get("key") != key:
+            return None
+        return cache
+
+    def _focus_clicked_residue(self, index):
+        structure = self._selected_structure()
+        if structure is None:
+            return
+        if not index.isValid():
+            return
+
+        residue_spec = index.data(Qt.UserRole + 1)
+        if not residue_spec:
+            return
+
+        try:
+            run(self.session, f"select {residue_spec}", log=False)
+            run(self.session, f"view {residue_spec}", log=False)
+            run(self.session, "zoom 0.5", log=False)
+            self.session.logger.status(f"Focused on {residue_spec}", color="blue")
+        except Exception as e:
+            self.session.logger.error(f"Failed to focus residue {residue_spec}: {e}")
+
+    def _update_residue_table(self, force: bool = False):
+        self.residue_table.setUpdatesEnabled(False)
+        self.residue_table.setSortingEnabled(False)
+        self.residue_table_model.clear()
+
+        structure = self._selected_structure()
+        if structure is None:
+            self._set_table_status("Select a structure to view per-residue DAQ scores.")
+            self.residue_table.setUpdatesEnabled(True)
+            self.residue_table.setSortingEnabled(True)
+            return
+
+        npy = self.load_edit.text().strip()
+        if not npy:
+            self._set_table_status("Set Load NPY to populate the residue table.")
+            self.residue_table.setUpdatesEnabled(True)
+            self.residue_table.setSortingEnabled(True)
+            return
+
+        cache = None if force else self._get_cached_residue_table_data()
+        if cache is not None:
+            rows = cache["rows"]
+            cache_source = cache.get("source", "cache")
+        else:
+            try:
+                score_data = _compute_residue_scores(
+                    self.session,
+                    structure,
+                    npy,
+                    int(self.k_spin.value()),
+                    self._selected_metric(),
+                    atom_name="CA",
+                    radius=3.0,
+                    halfwindow=int(self.hw_spin.value()),
+                    run_dssp=True,
+                )
+            except Exception as e:
+                self._set_table_status(f"Failed to load residue scores: {e}")
+                self.session.logger.error(f"Failed to build residue score table: {e}")
+                self.residue_table.setUpdatesEnabled(True)
+                self.residue_table.setSortingEnabled(True)
+                return
+
+            if score_data is None:
+                self._set_table_status("No residues were found in the selected structure.")
+                self.residue_table.setUpdatesEnabled(True)
+                self.residue_table.setSortingEnabled(True)
+                return
+
+            residues = score_data["residues"]
+            scores = score_data["scores"]
+            cache_source = "computed"
+            self._store_residue_table_cache(residues, scores, source=cache_source)
+            rows = self._residue_table_cache["rows"]
+
+        self._set_table_status(
+            f"Loaded {len(rows)} residues using {self.metric_combo.currentText()} from {os.path.basename(npy)} ({cache_source})."
+        )
+        self.residue_table_model.set_rows(rows)
+        self.residue_table.setUpdatesEnabled(True)
+        self.residue_table.setSortingEnabled(True)
+        sort_section = self.residue_table.horizontalHeader().sortIndicatorSection()
+        sort_order = self.residue_table.horizontalHeader().sortIndicatorOrder()
+        self.residue_table.sortByColumn(sort_section, sort_order)
 
     # ---------------- Command runners ----------------
     def _run_compute_grid(self):
@@ -1004,6 +1324,7 @@ class DAQTool(ToolInstance):
         self.session.logger.info(f"Running: {cmd}")
         run(self.session, cmd)
         self.load_edit.setText(outp)
+        self._capture_scores_from_structure_bfactors(self._selected_structure())
 
     def _run_compute_pdb(self):
         if not self._require_map_and_npy("compute_pdb"):
@@ -1042,6 +1363,7 @@ class DAQTool(ToolInstance):
 
         self.session.logger.info(f"Running: {cmd}")
         run(self.session, cmd)
+        self._capture_scores_from_structure_bfactors(self._selected_structure())
         self.load_edit.setText(outp)
 
     def _run_color_apply(self):

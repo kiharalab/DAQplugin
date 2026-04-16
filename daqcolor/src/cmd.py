@@ -150,58 +150,127 @@ def _window_average_scal(residues, scal, half_window=9):
     return out
 
 
-
-def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, clamp_max, radius=3.0, halfwindow=9, 
-             eps=0.1, monitor=False):
-    AA20 = [
-    "ALA","VAL","PHE","PRO","MET","ILE","LEU","ASP","GLU","LYS",
-    "ARG","SER","THR","TYR","HIS","CYS","ASN","TRP","GLN","GLY"
-    ]
-
-    AA_INDEX = {aa:i for i,aa in enumerate(AA20)}
-    ATOM_TYPES6 = ["Other","N","CA","C","O","CB"]  #（index 0..5）
-
+def _get_cached_npy_data(npy_path):
     mtime = os.path.getmtime(npy_path)
     npy_key = (npy_path, mtime)
     cached = _NPY_CACHE.get(npy_key)
     if cached is None:
-        #load numpy file
         print(f"Loading numpy file: {npy_path}")
         arr = np.load(npy_path)
         if arr.ndim != 2 or arr.shape[1] != 32:
             raise ValueError(f"Expected (N,32) numpy file; got {arr.shape}")
-        #pts  = arr[:, :3].astype(np.float32)
-        #aa   = arr[:, 3:23].astype(np.float32)
-        #atom = arr[:, 23:29].astype(np.float32)
-        #ss3 = arr[:, 29:32].astype(np.float32)  # SS : 0,1,2 = helix, sheet, coil
-        # contiguous + float32
-        pts  = np.ascontiguousarray(arr[:, :3],   dtype=np.float32)
-        aa   = np.ascontiguousarray(arr[:, 3:23], dtype=np.float32)
-        atom = np.ascontiguousarray(arr[:, 23:29],dtype=np.float32)
-        ss3  = np.ascontiguousarray(arr[:, 29:32],dtype=np.float32)
+        pts = np.ascontiguousarray(arr[:, :3], dtype=np.float32)
+        aa = np.ascontiguousarray(arr[:, 3:23], dtype=np.float32)
+        atom = np.ascontiguousarray(arr[:, 23:29], dtype=np.float32)
+        ss3 = np.ascontiguousarray(arr[:, 29:32], dtype=np.float32)
 
         from scipy.spatial import cKDTree
         tree = cKDTree(pts)
 
-        _NPY_CACHE.clear()  # keep only one entry
-        _NPY_CACHE[npy_key] = {
+        _NPY_CACHE.clear()
+        cached = {
             "pts": pts,
             "aa": aa,
             "atom": atom,
             "ss3": ss3,
             "tree": tree
         }
-    else:
-        pts, aa, atom, ss3 = cached["pts"], cached["aa"], cached["atom"], cached["ss3"]
-        tree = cached["tree"]
+        _NPY_CACHE[npy_key] = cached
 
+    return mtime, cached
+
+
+def _compute_residue_scores(session, model, npy_path, k, metric, atom_name="CA",
+                            radius=3.0, halfwindow=9, run_dssp=True):
+    AA20 = [
+        "ALA","VAL","PHE","PRO","MET","ILE","LEU","ASP","GLU","LYS",
+        "ARG","SER","THR","TYR","HIS","CYS","ASN","TRP","GLN","GLY"
+    ]
+
+    AA_INDEX = {aa: i for i, aa in enumerate(AA20)}
+    ATOM_TYPES6 = ["Other", "N", "CA", "C", "O", "CB"]
+
+    mtime, cached = _get_cached_npy_data(npy_path)
+    pts, aa, atom, ss3 = cached["pts"], cached["aa"], cached["atom"], cached["ss3"]
+    tree = cached["tree"]
+
+    residues = model.residues
+    if residues is None or len(residues) == 0:
+        session.logger.warning("No residues in model.")
+        return None
+
+    q = _residue_coords(residues, atom_name=atom_name, use_scene=True)
+    valid_ca = np.isfinite(q[:, 0])
+
+    if metric == "aa_score":
+        aa_mean, has_nbr = _aggregate(pts, aa, q, k=k, radius=radius, tree=tree)
+        names = np.array([n.upper() for n in residues.names], dtype=object)
+        idx = np.array([AA_INDEX.get(n, -1) for n in names], dtype=int)
+        scal = np.full((len(residues),), np.nan, dtype=np.float32)
+        valid = idx >= 0
+        if np.any(valid):
+            rows = np.nonzero(valid)[0]
+            scal[rows] = aa_mean[rows, idx[valid]]
+    elif metric.startswith("aa_conf:"):
+        aa_mean, has_nbr = _aggregate(pts, aa, q, k=k, radius=radius, tree=tree)
+        aa3 = metric.split(":", 1)[1].upper()
+        j = AA20.index(aa3)
+        scal = aa_mean[:, j]
+    elif metric == "atom_score":
+        atom_mean, has_nbr = _aggregate(pts, atom, q, k=k, radius=radius, tree=tree)
+        j = ATOM_TYPES6.index(atom_name)
+        scal = np.full((len(residues),), np.nan, dtype=np.float32)
+        if np.any(valid_ca):
+            scal[valid_ca] = atom_mean[valid_ca, j]
+    elif metric == "ss_score":
+        if run_dssp:
+            try:
+                run(session, f"dssp #{model.id_string}")
+            except Exception as e:
+                session.logger.warning(f"DSSP failed: {e}. Secondary structure types may be unavailable.")
+
+        ss_mean, has_nbr = _aggregate(pts, ss3, q, k=k, radius=radius, tree=tree)
+        scal = np.full((len(residues),), np.nan, dtype=np.float32)
+        idx = np.empty((len(residues),), dtype=np.int32)
+        for i, r in enumerate(residues):
+            if r.ss_type == r.SS_HELIX:
+                idx[i] = 0
+            elif r.ss_type == r.SS_STRAND:
+                idx[i] = 1
+            else:
+                idx[i] = 2
+        if np.any(valid_ca):
+            rows = np.nonzero(valid_ca)[0]
+            scal[rows] = ss_mean[rows, idx[rows]]
+    else:
+        raise ValueError(f"Unknown metric: {metric}")
+
+    total_daq = np.nansum(scal)
+    mean_daq = np.nanmean(scal)
+    n_res = np.sum(np.isfinite(scal))
+    scal = _window_average_scal(residues, scal, half_window=halfwindow)
+
+    return {
+        "residues": residues,
+        "scores": scal,
+        "has_neighbor": has_nbr,
+        "raw_total": total_daq,
+        "raw_mean": mean_daq,
+        "raw_count": n_res,
+        "mtime": mtime,
+        "q": q,
+    }
+
+
+def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, clamp_max, radius=3.0, halfwindow=9, 
+             eps=0.1, monitor=False):
+    mtime, _ = _get_cached_npy_data(npy_path)
     residues = model.residues
     if residues is None or len(residues) == 0:
         session.logger.warning("No residues in model.")
         return
 
-    q = _residue_coords(residues, atom_name=atom_name, use_scene=True)  # (M,3)
-    valid_ca = np.isfinite(q[:, 0])
+    q = _residue_coords(residues, atom_name=atom_name, use_scene=True)
     # ---- cache key: same npy and paramaters ----
     
     param_key = (npy_path, mtime, k, float(radius), metric, atom_name, halfwindow,
@@ -249,69 +318,31 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
                 residues.atoms.bfactors = model_cache["bf_vals"]
                 return
 
-    # metric
-    if metric == "aa_score":
-        aa_mean, has_nbr = _aggregate(pts, aa, q, k=k, radius=radius, tree=tree)
-        # extract residues with neighbors
-        names = np.array([n.upper() for n in residues.names], dtype=object)  # (R,)
-        idx = np.array([AA_INDEX.get(n, -1) for n in names], dtype=int)      # (R,)
-        scal = np.full((len(residues),), np.nan, dtype=np.float32)
-        valid = idx >= 0
-        if np.any(valid):
-            rows = np.nonzero(valid)[0]
-            scal[rows] = aa_mean[rows, idx[valid]]
+    score_data = _compute_residue_scores(
+        session,
+        model,
+        npy_path,
+        k,
+        metric,
+        atom_name=atom_name,
+        radius=radius,
+        halfwindow=halfwindow,
+        run_dssp=True,
+    )
+    if score_data is None:
+        return
 
-    elif metric.startswith("aa_conf:"):
-        aa_mean, has_nbr = _aggregate(pts, aa, q, k=k, radius=radius, tree=tree)
-        aa3 = metric.split(":",1)[1].upper()
-        j = AA20.index(aa3)
-        scal = aa_mean[:, j]
-    elif metric == "atom_score":
-        atom_mean, has_nbr = _aggregate(pts, atom, q, k=k, radius=radius, tree=tree)
-        j = ATOM_TYPES6.index(atom_name) #index: 2 : CA
-        #scal = atom_mean[:, j]
-        scal = np.full((len(residues),), np.nan, dtype=np.float32)
-        if np.any(valid_ca):
-            scal[valid_ca] = atom_mean[valid_ca, j]
-    elif metric == "ss_score":
-        #Ensure DSSP has been run to assign secondary structure types to residues
-        try:
-            run(session, f"dssp #{model.id_string}")
-        except Exception as e:
-            session.logger.warning(f"DSSP failed: {e}. Secondary structure types may be unavailable.")
-
-        ss_mean, has_nbr  = _aggregate(pts, ss3,  q, k=k, radius=radius, tree=tree)
-        # ss3 has [Helix, Strand, COIL or unknown]
-        scal = np.full((len(residues),), np.nan, dtype=np.float32)
-        
-        # 残基ごとに列indexを作る
-        idx = np.empty((len(residues),), dtype=np.int32)
-        for i, r in enumerate(residues):
-            if r.ss_type == r.SS_HELIX:
-                idx[i] = 0
-            elif r.ss_type == r.SS_STRAND:
-                idx[i] = 1
-            else:
-                idx[i] = 2  # COIL or unknown
-
-        #scal[:] = ss_mean[np.arange(len(residues)), idx]
-        if np.any(valid_ca):
-            rows = np.nonzero(valid_ca)[0]
-            scal[rows] = ss_mean[rows, idx[rows]]
-    else:
-        raise ValueError(f"Unknown metric: {metric}")
-
-    # ---- DAQ total score (before window averaging) ----
-    total_daq = np.nansum(scal)
-    mean_daq  = np.nanmean(scal)
-    n_res     = np.sum(np.isfinite(scal))
+    residues = score_data["residues"]
+    q = score_data["q"]
+    has_nbr = score_data["has_neighbor"]
+    total_daq = score_data["raw_total"]
+    mean_daq = score_data["raw_mean"]
+    n_res = score_data["raw_count"]
+    scal = score_data["scores"]
 
     msg = f"DAQ raw sum={total_daq:.3f}  mean={mean_daq:.3f}  N={n_res}"
     session.logger.info(msg)
     session.logger.status(msg, color="blue")
-
-    # ---- DAQ window average score ----
-    scal = _window_average_scal(residues, scal, half_window=halfwindow)
 
     # --- Input score into B-factor ---
     ats = residues.atoms
