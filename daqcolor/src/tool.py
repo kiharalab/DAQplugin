@@ -918,6 +918,19 @@ class DAQTool(ToolInstance):
         self.color_monitor_interval.setValue(0.50)
         self.color_monitor_interval.setToolTip("Update interval for automatic monitoring (in seconds)")
         color_params_layout.addWidget(self.color_monitor_interval, 1, 1)
+
+        workers_label = QLabel("kNN workers", root)
+        workers_label.setToolTip("Number of workers for SciPy cKDTree query; 1 keeps current behavior, -1 uses all available cores")
+        color_params_layout.addWidget(workers_label, 1, 2)
+        self.knn_workers_spin = QSpinBox(root)
+        self.knn_workers_spin.setRange(-1, 64)
+        self.knn_workers_spin.setValue(1)
+        self.knn_workers_spin.setToolTip("Number of workers for SciPy cKDTree query; 1 keeps current behavior, -1 uses all available cores")
+        color_params_layout.addWidget(self.knn_workers_spin, 1, 3)
+
+        self.color_log_timing_check = QCheckBox("Log timing", root)
+        self.color_log_timing_check.setToolTip("Log detailed timing for daqcolor apply/monitor steps")
+        color_params_layout.addWidget(self.color_log_timing_check, 2, 0, 1, 2)
         params_layout.addWidget(color_params_group)
 
         arrow_params_group, arrow_params_layout, _ = make_field_box("Sequence Shift Suggestion Parameters", card="dark", layout_cls=QGridLayout)
@@ -1398,6 +1411,9 @@ class DAQTool(ToolInstance):
             cmd += f" clamp_min {float(cmin)}"
         if cmax:
             cmd += f" clamp_max {float(cmax)}"
+        cmd += f" knn_workers {int(self.knn_workers_spin.value())}"
+        if self.color_log_timing_check.isChecked():
+            cmd += " log_timing true"
 
         self.session.logger.info(f"Running: {cmd}")
         run(self.session, cmd)
@@ -1441,6 +1457,9 @@ class DAQTool(ToolInstance):
             cmd += f" clamp_min {float(cmin)}"
         if cmax:
             cmd += f" clamp_max {float(cmax)}"
+        cmd += f" knn_workers {int(self.knn_workers_spin.value())}"
+        if self.color_log_timing_check.isChecked():
+            cmd += " log_timing true"
 
         self.session.logger.info(f"Running: {cmd}")
         run(self.session, cmd)

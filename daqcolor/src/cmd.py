@@ -34,46 +34,60 @@ def _log_compute_timings(session, timings):
 
 # kNN search
 # Add tree
-def _knn_idx(db_pts, q_pts, k=8, radius=None, chunk=2000, tree=None):
-    try:
-        from scipy.spatial import cKDTree
-        if tree is None:
-            tree = cKDTree(db_pts)
-        if radius is None:
-            dist, idx = tree.query(q_pts, k=k)
-        else:
-            dist, idx = tree.query(q_pts, k=k, distance_upper_bound=float(radius))
-        
+def _knn_idx(db_pts, q_pts, k=8, radius=None, chunk=2000, tree=None, workers=1,
+             query_info=None):
+    from scipy.spatial import cKDTree
+
+    if tree is None:
+        tree = cKDTree(db_pts)
+
+    finite_q = np.isfinite(q_pts).all(axis=1)
+    invalid_q_count = int(np.size(finite_q) - np.count_nonzero(finite_q))
+    query_kwargs = {}
+    if radius is not None:
+        query_kwargs["distance_upper_bound"] = float(radius)
+    if workers != 1:
+        query_kwargs["workers"] = int(workers)
+    if query_info is not None:
+        query_info["requested_workers"] = int(workers)
+        query_info["passed_workers_arg"] = "workers" in query_kwargs
+        query_info["fallback_without_workers"] = False
+        query_info["backend"] = "scipy.cKDTree"
+        query_info["invalid_query_points"] = invalid_q_count
+
+    def query_valid_points(kwargs):
+        if invalid_q_count:
+            q_valid = q_pts[finite_q]
+            dist = np.full((q_pts.shape[0], k), np.inf, dtype=np.float32)
+            idx = np.zeros((q_pts.shape[0], k), dtype=np.int64)
+            if q_valid.shape[0]:
+                dist_valid, idx_valid = tree.query(q_valid, k=k, **kwargs)
+                if k == 1:
+                    dist_valid = dist_valid[:, None]
+                    idx_valid = idx_valid[:, None]
+                dist[finite_q] = dist_valid
+                idx[finite_q] = idx_valid
+            return dist, idx
+
+        dist, idx = tree.query(q_pts, k=k, **kwargs)
         if k == 1:
             dist = dist[:, None]
-            idx  = idx[:, None]
+            idx = idx[:, None]
         return dist, idx
-    except Exception:
-        # NumPy fallback 
-        Nq = q_pts.shape[0]
-        out_idx = np.empty((Nq, k), dtype=np.int32)
-        out_dist = np.empty((Nq, k), dtype=np.float32)
-        for s in range(0, Nq, chunk):
-            e = min(Nq, s+chunk)
-            q = q_pts[s:e]
-            diff = q[:, None, :] - db_pts[None, :, :]
-            d2 = np.einsum('mpc,mpc->mp', diff, diff)
-            part = np.argpartition(d2, k-1, axis=1)[:, :k]
-            sub = np.take_along_axis(d2, part, axis=1)
-            order = np.argsort(sub, axis=1)
-            idx = np.take_along_axis(part, order, axis=1)
-            dist = np.sqrt(np.take_along_axis(sub, order, axis=1))
-            if radius is not None:
-                mask = dist > float(radius)
-                # ダミー: idx を 0 に、dist を inf にして後段で無視
-                idx[mask] = 0
-                dist[mask] = np.inf
-            out_idx[s:e] = idx
-            out_dist[s:e] = dist
-        return out_dist, out_idx
+
+    try:
+        return query_valid_points(query_kwargs)
+    except TypeError:
+        had_workers = "workers" in query_kwargs
+        query_kwargs.pop("workers", None)
+        if query_info is not None and had_workers:
+            query_info["fallback_without_workers"] = True
+            query_info["passed_workers_arg"] = False
+        return query_valid_points(query_kwargs)
 
 
-def _aggregate(pts, aa, q, k=1, radius=None, tree=None):
+def _aggregate(pts, aa, q, k=1, radius=None, tree=None, workers=1,
+               query_info=None):
     """
     pts: (N,3)
     aa:  (N,C) 
@@ -84,7 +98,8 @@ def _aggregate(pts, aa, q, k=1, radius=None, tree=None):
       aa_nn:        (M,C) 
       has_neighbor: (M,)  
     """
-    dist, idx = _knn_idx(pts, q, k=k, radius=radius,tree=tree)  # dist:(M,k), idx:(M,k)
+    dist, idx = _knn_idx(pts, q, k=k, radius=radius, tree=tree, workers=workers,
+                         query_info=query_info)  # dist:(M,k), idx:(M,k)
     N, C = aa.shape
     M = q.shape[0]
 
@@ -181,7 +196,43 @@ def _get_cached_npy_data(npy_path):
 
 
 def _compute_residue_scores(session, model, npy_path, k, metric, atom_name="CA",
-                            radius=3.0, halfwindow=9, run_dssp=True):
+                            radius=3.0, halfwindow=9, run_dssp=True,
+                            log_timing=False, timing_prefix="daqcolor",
+                            knn_workers=1):
+    if log_timing:
+        import time
+        timings = []
+        timing_notes = []
+        compute_t0 = time.perf_counter()
+
+        def mark(label, start):
+            elapsed = time.perf_counter() - start
+            timings.append((label, elapsed))
+            return time.perf_counter()
+
+        def record_query_info(label, info):
+            requested = info.get("requested_workers", 1)
+            passed = info.get("passed_workers_arg", False)
+            fallback = info.get("fallback_without_workers", False)
+            backend = info.get("backend", "unknown")
+            invalid_query_points = info.get("invalid_query_points", 0)
+            if fallback:
+                status = "fallback without workers"
+            elif passed:
+                status = "workers argument used"
+            else:
+                status = "workers argument not used"
+            note = (
+                f"  {label}: backend={backend}, requested={requested}, {status}, "
+                f"invalid_query_points={invalid_query_points}"
+            )
+            timing_notes.append(note)
+    else:
+        time = None
+        timings = None
+        timing_notes = None
+        compute_t0 = None
+
     AA20 = [
         "ALA","VAL","PHE","PRO","MET","ILE","LEU","ASP","GLU","LYS",
         "ARG","SER","THR","TYR","HIS","CYS","ASN","TRP","GLN","GLY"
@@ -190,7 +241,11 @@ def _compute_residue_scores(session, model, npy_path, k, metric, atom_name="CA",
     AA_INDEX = {aa: i for i, aa in enumerate(AA20)}
     ATOM_TYPES6 = ["Other", "N", "CA", "C", "O", "CB"]
 
+    if log_timing:
+        t0 = time.perf_counter()
     mtime, cached = _get_cached_npy_data(npy_path)
+    if log_timing:
+        mark("score: get cached npy/KDTree", t0)
     pts, aa, atom, ss3 = cached["pts"], cached["aa"], cached["atom"], cached["ss3"]
     tree = cached["tree"]
 
@@ -199,11 +254,25 @@ def _compute_residue_scores(session, model, npy_path, k, metric, atom_name="CA",
         session.logger.warning("No residues in model.")
         return None
 
+    if log_timing:
+        t0 = time.perf_counter()
     q = _residue_coords(residues, atom_name=atom_name, use_scene=True)
+    if log_timing:
+        mark("score: residue coordinates", t0)
     valid_ca = np.isfinite(q[:, 0])
 
     if metric == "aa_score":
-        aa_mean, has_nbr = _aggregate(pts, aa, q, k=k, radius=radius, tree=tree)
+        if log_timing:
+            t0 = time.perf_counter()
+            query_info = {}
+        else:
+            query_info = None
+        aa_mean, has_nbr = _aggregate(pts, aa, q, k=k, radius=radius, tree=tree, workers=knn_workers,
+                                      query_info=query_info)
+        if log_timing:
+            mark("score: kNN aggregate aa", t0)
+            record_query_info("score: kNN workers aa", query_info)
+            t0 = time.perf_counter()
         names = np.array([n.upper() for n in residues.names], dtype=object)
         idx = np.array([AA_INDEX.get(n, -1) for n in names], dtype=int)
         scal = np.full((len(residues),), np.nan, dtype=np.float32)
@@ -211,25 +280,65 @@ def _compute_residue_scores(session, model, npy_path, k, metric, atom_name="CA",
         if np.any(valid):
             rows = np.nonzero(valid)[0]
             scal[rows] = aa_mean[rows, idx[valid]]
+        if log_timing:
+            mark("score: metric aa_score", t0)
     elif metric.startswith("aa_conf:"):
-        aa_mean, has_nbr = _aggregate(pts, aa, q, k=k, radius=radius, tree=tree)
+        if log_timing:
+            t0 = time.perf_counter()
+            query_info = {}
+        else:
+            query_info = None
+        aa_mean, has_nbr = _aggregate(pts, aa, q, k=k, radius=radius, tree=tree, workers=knn_workers,
+                                      query_info=query_info)
+        if log_timing:
+            mark("score: kNN aggregate aa", t0)
+            record_query_info("score: kNN workers aa", query_info)
+            t0 = time.perf_counter()
         aa3 = metric.split(":", 1)[1].upper()
         j = AA20.index(aa3)
         scal = aa_mean[:, j]
+        if log_timing:
+            mark("score: metric aa_conf", t0)
     elif metric == "atom_score":
-        atom_mean, has_nbr = _aggregate(pts, atom, q, k=k, radius=radius, tree=tree)
+        if log_timing:
+            t0 = time.perf_counter()
+            query_info = {}
+        else:
+            query_info = None
+        atom_mean, has_nbr = _aggregate(pts, atom, q, k=k, radius=radius, tree=tree, workers=knn_workers,
+                                        query_info=query_info)
+        if log_timing:
+            mark("score: kNN aggregate atom", t0)
+            record_query_info("score: kNN workers atom", query_info)
+            t0 = time.perf_counter()
         j = ATOM_TYPES6.index(atom_name)
         scal = np.full((len(residues),), np.nan, dtype=np.float32)
         if np.any(valid_ca):
             scal[valid_ca] = atom_mean[valid_ca, j]
+        if log_timing:
+            mark("score: metric atom_score", t0)
     elif metric == "ss_score":
         if run_dssp:
             try:
+                if log_timing:
+                    t0 = time.perf_counter()
                 run(session, f"dssp #{model.id_string}")
+                if log_timing:
+                    mark("score: dssp", t0)
             except Exception as e:
                 session.logger.warning(f"DSSP failed: {e}. Secondary structure types may be unavailable.")
 
-        ss_mean, has_nbr = _aggregate(pts, ss3, q, k=k, radius=radius, tree=tree)
+        if log_timing:
+            t0 = time.perf_counter()
+            query_info = {}
+        else:
+            query_info = None
+        ss_mean, has_nbr = _aggregate(pts, ss3, q, k=k, radius=radius, tree=tree, workers=knn_workers,
+                                      query_info=query_info)
+        if log_timing:
+            mark("score: kNN aggregate ss", t0)
+            record_query_info("score: kNN workers ss", query_info)
+            t0 = time.perf_counter()
         scal = np.full((len(residues),), np.nan, dtype=np.float32)
         idx = np.empty((len(residues),), dtype=np.int32)
         for i, r in enumerate(residues):
@@ -242,13 +351,28 @@ def _compute_residue_scores(session, model, npy_path, k, metric, atom_name="CA",
         if np.any(valid_ca):
             rows = np.nonzero(valid_ca)[0]
             scal[rows] = ss_mean[rows, idx[rows]]
+        if log_timing:
+            mark("score: metric ss_score", t0)
     else:
         raise ValueError(f"Unknown metric: {metric}")
 
+    if log_timing:
+        t0 = time.perf_counter()
     total_daq = np.nansum(scal)
     mean_daq = np.nanmean(scal)
     n_res = np.sum(np.isfinite(scal))
+    if log_timing:
+        mark("score: raw summary", t0)
+        t0 = time.perf_counter()
     scal = _window_average_scal(residues, scal, half_window=halfwindow)
+    if log_timing:
+        mark("score: window average", t0)
+        timings.append(("score: total", time.perf_counter() - compute_t0))
+        session.logger.info(f"{timing_prefix} timing detail:")
+        for label, elapsed in timings:
+            session.logger.info(f"  {label}: {elapsed:.4f} s")
+        for note in timing_notes:
+            session.logger.info(note)
 
     return {
         "residues": residues,
@@ -263,14 +387,36 @@ def _compute_residue_scores(session, model, npy_path, k, metric, atom_name="CA",
 
 
 def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, clamp_max, radius=3.0, halfwindow=9, 
-             eps=0.1, monitor=False):
+             eps=0.1, monitor=False, log_timing=False, knn_workers=1):
+    if log_timing:
+        import time
+        timings = []
+        recolor_t0 = time.perf_counter()
+
+        def mark(label, start):
+            elapsed = time.perf_counter() - start
+            timings.append((label, elapsed))
+            return time.perf_counter()
+    else:
+        time = None
+        timings = None
+        recolor_t0 = None
+
+    if log_timing:
+        t0 = time.perf_counter()
     mtime, _ = _get_cached_npy_data(npy_path)
+    if log_timing:
+        mark("recolor: get cached npy/KDTree", t0)
     residues = model.residues
     if residues is None or len(residues) == 0:
         session.logger.warning("No residues in model.")
         return
 
+    if log_timing:
+        t0 = time.perf_counter()
     q = _residue_coords(residues, atom_name=atom_name, use_scene=True)
+    if log_timing:
+        mark("recolor: residue coordinates", t0)
     # ---- cache key: same npy and paramaters ----
     
     param_key = (npy_path, mtime, k, float(radius), metric, atom_name, halfwindow,
@@ -280,6 +426,8 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
 
     model_cache = _RECOLOR_CACHE.get(param_key)
 
+    if log_timing:
+        t0 = time.perf_counter()
     if model_cache is not None:
         prev_q = model_cache["q"]
         # shape check: if the number of residues or atom_name changes, we cannot reuse the cache
@@ -307,17 +455,39 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
                         elif not np.array_equal(cur_res[ri], ref_res[ri]):
                             changed = True
                     if changed: #color changed by someone
+                        if log_timing:
+                            t_apply = time.perf_counter()
                         residues.ribbon_colors = model_cache["res_rgba"]
                         residues.atoms.colors  = model_cache["atom_rgba"]
                         residues.atoms.bfactors = model_cache["bf_vals"]
+                        if log_timing:
+                            mark("recolor: restore cached colors", t_apply)
 
+                    if log_timing:
+                        mark("recolor: cache check/skip", t0)
+                        timings.append(("recolor: total", time.perf_counter() - recolor_t0))
+                        session.logger.info("daqcolor timing detail:")
+                        for label, elapsed in timings:
+                            session.logger.info(f"  {label}: {elapsed:.4f} s")
                     return  # skip update if monitor and no significant movement
                 
+                if log_timing:
+                    t_apply = time.perf_counter()
                 residues.ribbon_colors = model_cache["res_rgba"]
                 residues.atoms.colors  = model_cache["atom_rgba"]
                 residues.atoms.bfactors = model_cache["bf_vals"]
+                if log_timing:
+                    mark("recolor: restore cached colors", t_apply)
+                    mark("recolor: cache check/hit", t0)
+                    timings.append(("recolor: total", time.perf_counter() - recolor_t0))
+                    session.logger.info("daqcolor timing detail:")
+                    for label, elapsed in timings:
+                        session.logger.info(f"  {label}: {elapsed:.4f} s")
                 return
 
+    if log_timing:
+        mark("recolor: cache check/miss", t0)
+        t0 = time.perf_counter()
     score_data = _compute_residue_scores(
         session,
         model,
@@ -328,7 +498,12 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
         radius=radius,
         halfwindow=halfwindow,
         run_dssp=True,
+        log_timing=log_timing,
+        timing_prefix="daqcolor",
+        knn_workers=knn_workers,
     )
+    if log_timing:
+        mark("recolor: compute residue scores", t0)
     if score_data is None:
         return
 
@@ -347,6 +522,8 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
     # --- Input score into B-factor ---
     ats = residues.atoms
 
+    if log_timing:
+        t0 = time.perf_counter()
     # NaN / inf を 0.0 に置き換え
     scal_for_b = np.asarray(scal, dtype=np.float32).copy()
     bad = ~np.isfinite(scal_for_b)
@@ -358,7 +535,11 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
 
     # atoms
     ats.bfactors = bf_vals
+    if log_timing:
+        mark("recolor: assign b-factors", t0)
 
+    if log_timing:
+        t0 = time.perf_counter()
     from chimerax.core.colors import Colormap, Color
     
     if cmap is None:
@@ -391,8 +572,12 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
 
     res_rgba = (np.clip(res_rgba_f, 0, 1) * 255).astype(np.uint8)
     residues.ribbon_colors = res_rgba
+    if log_timing:
+        mark("recolor: residue colors", t0)
 
     # 原子ごとの RGBA（残基→原子に展開）
+    if log_timing:
+        t0 = time.perf_counter()
     ats = residues.atoms
     vals_atom = np.repeat(x_safe, residues.num_atoms)
     atom_rgba_f = cmap.interpolated_rgba(vals_atom)
@@ -409,8 +594,12 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
         (np.clip(atom_rgba_f, 0.0, 1.0) * 255).astype(np.uint8)
     )
     ats.colors = atom_rgba
+    if log_timing:
+        mark("recolor: atom colors", t0)
 
     #color cache:
+    if log_timing:
+        t0 = time.perf_counter()
     max_res_samp = 128
     R = len(residues)
 
@@ -425,6 +614,12 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
         "atom_rgba": atom_rgba.copy(),
         "res_idx": res_idx.copy()
     }
+    if log_timing:
+        mark("recolor: update color cache", t0)
+        timings.append(("recolor: total", time.perf_counter() - recolor_t0))
+        session.logger.info("daqcolor timing detail:")
+        for label, elapsed in timings:
+            session.logger.info(f"  {label}: {elapsed:.4f} s")
 
     session.logger.status(
         f"daqcolor: colored {len(residues)} residues (k={k}, metric={metric}), DAQsum={total_daq:.3f}  mean={mean_daq:.3f}  N={n_res}",
@@ -436,13 +631,15 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
 
 def daqcolor_apply(session, npy_path, model, *, k=1, colormap=None,
                    metric="aa_score", atom_name="CA",
-                   clamp_min=None, clamp_max=None,half_window=9):
-    _recolor(session, model, npy_path, k, colormap, metric, atom_name, clamp_min, clamp_max, halfwindow=half_window)
+                   clamp_min=None, clamp_max=None,half_window=9,
+                   log_timing=False, knn_workers=1):
+    _recolor(session, model, npy_path, k, colormap, metric, atom_name, clamp_min, clamp_max, halfwindow=half_window, log_timing=log_timing, knn_workers=knn_workers)
 
 daqcolor_apply_desc = CmdDesc(
     required=[("npy_path", StringArg), ("model", ModelArg)],
     keyword=[("k", IntArg), ("colormap", ColormapArg), ("metric", StringArg),
-             ("atom_name", StringArg), ("clamp_min", FloatArg), ("clamp_max", FloatArg), ("half_window", IntArg)],
+             ("atom_name", StringArg), ("clamp_min", FloatArg), ("clamp_max", FloatArg), ("half_window", IntArg),
+             ("log_timing", BoolArg), ("knn_workers", IntArg)],
     synopsis="Color residues once from a numpy (N×32) probability file. " \
     "For metric, you can use " \
     "aa_score          - DAQ(AA) score" \
@@ -452,7 +649,8 @@ daqcolor_apply_desc = CmdDesc(
 
 def daqcolor_monitor(session, model, *, npy_path=None, k=1, colormap=None,
                      metric="aa_score", atom_name="CA", 
-                     clamp_min=None, clamp_max=None, half_window=9, on=True, interval=0.5):
+                     clamp_min=None, clamp_max=None, half_window=9, on=True, interval=0.5,
+                     log_timing=False, knn_workers=1):
     key = (session, model.id_string)
     if on:
         if npy_path is None:
@@ -464,7 +662,7 @@ def daqcolor_monitor(session, model, *, npy_path=None, k=1, colormap=None,
             session.triggers.remove_handler(existing["handler"])
             session.logger.info("daqcolor monitor: replacing existing monitor")
 
-        _recolor(session, model, npy_path, k, colormap, metric, atom_name, clamp_min, clamp_max, halfwindow=half_window)
+        _recolor(session, model, npy_path, k, colormap, metric, atom_name, clamp_min, clamp_max, halfwindow=half_window, log_timing=log_timing, knn_workers=knn_workers)
 
         import time
         last_update = [time.time()]  # Use list to allow modification in nested function
@@ -483,7 +681,7 @@ def daqcolor_monitor(session, model, *, npy_path=None, k=1, colormap=None,
                 # Throttle updates based on interval
                 current_time = time.time()
                 if current_time - last_update[0] >= interval:
-                    _recolor(session, model, npy_path, k, colormap, metric, atom_name, clamp_min, clamp_max, halfwindow=half_window, monitor=True)
+                    _recolor(session, model, npy_path, k, colormap, metric, atom_name, clamp_min, clamp_max, halfwindow=half_window, monitor=True, log_timing=log_timing, knn_workers=knn_workers)
                     last_update[0] = current_time
             except Exception as e:
                 session.logger.warning(f"daqcolor monitor error: {e}")
@@ -507,7 +705,9 @@ daqcolor_monitor_desc = CmdDesc(
              ("clamp_min", FloatArg), ("clamp_max", FloatArg),
              ("half_window", IntArg), 
              ("on", BoolArg), 
-             ("interval", FloatArg)
+             ("interval", FloatArg),
+             ("log_timing", BoolArg),
+             ("knn_workers", IntArg)
              ],
     synopsis="Start/stop live recoloring with throttling. interval (default 0.5s) controls update frequency. Use 'on false' to stop monitoring."
 )
