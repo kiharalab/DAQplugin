@@ -24,6 +24,19 @@ except ImportError:
     unify_map_function = None
 
 
+def normalize_npy_output_path(output_path: Union[str, Path]) -> Path:
+    """
+    Return the path that np.save will actually create for an NPY output.
+
+    numpy appends ".npy" when the path does not already end with that suffix.
+    Normalize before saving so logging and downstream loading use the real file.
+    """
+    output_path = Path(output_path)
+    if str(output_path).lower().endswith(".npy"):
+        return output_path
+    return Path(f"{output_path}.npy")
+
+
 def unify_map_if_needed(map_path: str, temp_dir: str = None) -> str:
     """
     Unify a map file to standard MRC format.
@@ -606,7 +619,7 @@ def compute_daq_scores(
     # Save results if output path provided
     actual_output_path = None
     if output_path:
-        output_path = Path(output_path)
+        output_path = normalize_npy_output_path(output_path)
         try:
             # Try to write to the requested directory
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -618,7 +631,7 @@ def compute_daq_scores(
             # Fall back to user's home directory
             safe_dir = Path.home() / "DAQcolor_output"
             safe_dir.mkdir(parents=True, exist_ok=True)
-            actual_output_path = safe_dir / output_path.name
+            actual_output_path = normalize_npy_output_path(safe_dir / output_path.name)
             np.save(str(actual_output_path), scores)
             session.logger.warning(f"Could not write to {output_path.parent}, saving to {actual_output_path}")
             session.logger.info(f"Saved DAQ scores to: {actual_output_path}")
@@ -837,7 +850,7 @@ def compute_daq_scores_pdb(
     # Save results if output path provided
     actual_output_path = None
     if output_path:
-        output_path = Path(output_path)
+        output_path = normalize_npy_output_path(output_path)
         try:
             # Try to write to the requested directory
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -849,7 +862,7 @@ def compute_daq_scores_pdb(
             # Fall back to user's home directory
             safe_dir = Path.home() / "DAQcolor_output"
             safe_dir.mkdir(parents=True, exist_ok=True)
-            actual_output_path = safe_dir / output_path.name
+            actual_output_path = normalize_npy_output_path(safe_dir / output_path.name)
             np.save(str(actual_output_path), scores)
             session.logger.warning(f"Could not write to {output_path.parent}, saving to {actual_output_path}")
             session.logger.info(f"Saved DAQ scores to: {actual_output_path}")

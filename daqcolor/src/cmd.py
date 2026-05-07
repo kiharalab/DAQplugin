@@ -863,7 +863,7 @@ def daqscore_compute_grid(session, map_input, contour, *, structure=None, output
         )
         return
     
-    from .compute import compute_daq_scores
+    from .compute import compute_daq_scores, normalize_npy_output_path
     
     # Determine if input is a Volume model or file path
     if isinstance(map_input, Volume):
@@ -876,6 +876,8 @@ def daqscore_compute_grid(session, map_input, contour, *, structure=None, output
         if output is None:
             # Use current working directory with volume name
             output = Path.cwd() / f"{map_name.replace(' ', '_')}_daq_scores.npy"
+        else:
+            output = normalize_npy_output_path(output)
         
         map_source = volume  # Pass Volume object directly
     else:
@@ -886,6 +888,8 @@ def daqscore_compute_grid(session, map_input, contour, *, structure=None, output
         # Generate output path if not specified
         if output is None:
             output = map_path.parent / f"{map_path.stem}_daq_scores.npy"
+        else:
+            output = normalize_npy_output_path(output)
         
         map_source = map_path  # Pass path
     
@@ -1012,7 +1016,7 @@ def daqscore_compute_pdb(session, map_input, *, structure=None, output=None,
         )
         return
 
-    from .compute import compute_daq_scores_pdb
+    from .compute import compute_daq_scores_pdb, normalize_npy_output_path
 
     # Determine if input is a Volume model or file path
     if isinstance(map_input, Volume):
@@ -1022,6 +1026,8 @@ def daqscore_compute_pdb(session, map_input, *, structure=None, output=None,
 
         if output is None:
             output = Path.cwd() / f"{map_name.replace(' ', '_')}_{structure.name}_pdb_daq_scores.npy"
+        else:
+            output = normalize_npy_output_path(output)
 
         map_source = volume
     else:
@@ -1030,6 +1036,8 @@ def daqscore_compute_pdb(session, map_input, *, structure=None, output=None,
 
         if output is None:
             output = map_path.parent / f"{map_path.stem}_{structure.name}_pdb_daq_scores.npy"
+        else:
+            output = normalize_npy_output_path(output)
 
         map_source = map_path
 

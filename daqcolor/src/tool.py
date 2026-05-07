@@ -229,6 +229,15 @@ class DAQTool(ToolInstance):
             return f" {key} " + (f"\"{v}\"" if quote else v)
         return f" {key} {value}"
 
+    def _normalized_output_npy_path(self) -> str:
+        """
+        Match numpy.save behavior for Output NPY: append .npy when omitted.
+        """
+        outp = self.output_edit.text().strip()
+        if outp and not outp.lower().endswith(".npy"):
+            outp = f"{outp}.npy"
+        return outp
+
     # ---------------- Requirements / warnings ----------------
     def _require_map_and_npy(self, context: str) -> bool:
         """
@@ -1301,7 +1310,7 @@ class DAQTool(ToolInstance):
         if not self._require_map_and_npy("compute_grid"):
             return
         map_tok = self._map_input_token()
-        outp = self.output_edit.text().strip()
+        outp = self._normalized_output_npy_path()
 
         if not self._warn_overwrite_if_exists(outp, title="Overwrite NPY from compute_grid?"):
             self.session.logger.info("compute_grid canceled by user (overwrite declined).")
@@ -1330,7 +1339,6 @@ class DAQTool(ToolInstance):
         if metric:
             cmd += f" metric \"{metric}\""
 
-        outp = self.output_edit.text().strip()
         if outp:
             cmd += f" output \"{outp}\""
 
@@ -1363,7 +1371,7 @@ class DAQTool(ToolInstance):
         if metric:
             cmd += f" metric \"{metric}\""
 
-        outp = self.output_edit.text().strip()
+        outp = self._normalized_output_npy_path()
         if outp:
             cmd += f" output \"{outp}\""
 
