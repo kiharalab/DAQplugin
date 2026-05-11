@@ -13,6 +13,7 @@ _MON = {}  # (session, model.id_string) -> dict
 
 # For recolor: cache loaded numpy data and KDTree to avoid reloading/rebuilding on every frame
 _RECOLOR_CACHE = {}  # keep only one
+_WINDOW_AVERAGE_CACHE = {}  # keep only one residue window plan
 
 
 def _log_compute_timings(session, timings):
@@ -132,6 +133,35 @@ def _aggregate(pts, aa, q, k=1, radius=None, tree=None, workers=1,
 
     return aa_nn, has_neighbor
 
+def _get_window_average_plan(residues, half_window):
+    half_window = int(half_window)
+    signature = tuple((r.chain_id, r.number) for r in residues)
+    cache_key = (signature, half_window)
+    cached = _WINDOW_AVERAGE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    chain_to_indices = {}
+    for i, (chain_id, _) in enumerate(signature):
+        chain_to_indices.setdefault(chain_id, []).append(i)
+
+    plan = []
+    resnums = np.array([number for _, number in signature], dtype=np.int64)
+    for indices in chain_to_indices.values():
+        idx = np.asarray(indices, dtype=np.int64)
+        nums_unsorted = resnums[idx]
+        order = np.argsort(nums_unsorted, kind="stable")
+        idx_sorted = idx[order]
+        nums = nums_unsorted[order]
+        left = np.searchsorted(nums, nums - half_window, side="left")
+        right = np.searchsorted(nums, nums + half_window, side="right")
+        plan.append((idx_sorted, left, right))
+
+    _WINDOW_AVERAGE_CACHE.clear()
+    _WINDOW_AVERAGE_CACHE[cache_key] = plan
+    return plan
+
+
 def _window_average_scal(residues, scal, half_window=9):
     """
     residues: ChimeraX ResidueCollection
@@ -145,22 +175,23 @@ def _window_average_scal(residues, scal, half_window=9):
     scal = np.asarray(scal, dtype=np.float32)
     out = np.full(R, np.nan, dtype=np.float32)
 
-    # Make array
-    chain_ids = np.array([r.chain_id for r in residues], dtype=object)
-    resnums   = np.array([r.number   for r in residues], dtype=int)
+    for idx_sorted, left, right in _get_window_average_plan(residues, half_window):
+        vals = scal[idx_sorted]
+        finite = np.isfinite(vals)
+        safe_vals = np.where(finite, vals, 0.0)
 
-    for i in range(R):
-        c = chain_ids[i]
-        n = resnums[i]
+        prefix_sum = np.empty(len(vals) + 1, dtype=np.float64)
+        prefix_sum[0] = 0.0
+        prefix_sum[1:] = np.cumsum(safe_vals, dtype=np.float64)
 
-        # compute window
-        mask = (chain_ids == c) & (resnums >= n - half_window) & (resnums <= n + half_window)
-        vals = scal[mask]
+        prefix_count = np.empty(len(vals) + 1, dtype=np.int64)
+        prefix_count[0] = 0
+        prefix_count[1:] = np.cumsum(finite.astype(np.int64))
 
-        # ignore NaN
-        vals = vals[np.isfinite(vals)]
-        if len(vals) > 0:
-            out[i] = vals.mean()
+        sums = prefix_sum[right] - prefix_sum[left]
+        counts = prefix_count[right] - prefix_count[left]
+        valid = counts > 0
+        out[idx_sorted[valid]] = (sums[valid] / counts[valid]).astype(np.float32)
 
     return out
 
