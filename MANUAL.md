@@ -3,6 +3,7 @@
 **DAQplugin** computes, visualizes, and inspects DAQ scores for protein atomic models fitted into cryo-EM density maps.
 
 DAQ, Deep-learning-based Amino-acid-wise model Quality, is a residue-wise local quality score designed to detect amino-acid misassignment and local modeling errors in cryo-EM-derived protein structures.
+https://www.nature.com/articles/s41592-022-01574-4
 
 ## Quick Usage
 
@@ -87,10 +88,12 @@ DAQplugin uses CPU inference inside ChimeraX. For very large maps or limited loc
 
 Start the GUI from **Tools > Validation > DAQplugin**.
 
-<img src="https://github.com/gterashi/DAQplugin/blob/main/img/gui1.png?raw=true" width="300">
-<img src="https://github.com/gterashi/DAQplugin/blob/main/img/gui2.png?raw=true" width="300">
+
+
 
 ### Main tab
+
+<img src="https://github.com/gterashi/DAQplugin/blob/main/img/gui1.png?raw=true" width="200">
 
 **Inputs**
 
@@ -113,10 +116,13 @@ Start the GUI from **Tools > Validation > DAQplugin**.
 
 ### Parameters tab
 
+<img src="https://github.com/gterashi/DAQplugin/blob/main/img/gui2.png?raw=true" width="200">
+
 **Compute Settings**
 
 - **Batch size**: samples per inference batch, default `512`.
-
+- **Use GPU**: CURRENTLY NOT AVAILABLE. Coming Soon.
+  
 **Grid Settings**
 
 - **Contour**: density threshold for sampling grid points. This usually matches the map display contour.
@@ -145,6 +151,7 @@ Start the GUI from **Tools > Validation > DAQplugin**.
 - **Constraint spring**: ISOLDE position-restraint spring constant, default `1500`.
 
 ### Per-Residue DAQ Scores tab
+<img src="https://github.com/gterashi/DAQplugin/blob/main/img/gui3.png?raw=true" width="200">
 
 This tab shows chain ID, residue ID, amino-acid name, and window-averaged DAQ score for the current structure and `.npy` file. Click **Refresh** to recompute the table. Click a residue row to select, center, and zoom to that residue in ChimeraX.
 
