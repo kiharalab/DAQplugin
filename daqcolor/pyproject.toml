@@ -8,16 +8,23 @@ build-backend = "chimerax.bundle_builder.cx_pep517"
 # When uploaded to the ChimeraX toolshed, the bundle
 # will be displayed without the ChimeraX- prefix.
 name = "ChimeraX-DAQplugin"
-version = "1.0.0"
+version = "1.0.1"
 license = "GPL-3.0-only"
 authors = [{name = "Genki Terashi", email = "gterashi@purdue.edu"}]
 description = "DAQ Score computation and visualization for cryo-EM models"
 dynamic = ["classifiers", "requires-python"]
-# Core dependencies - cross-platform compatible
-# NOTE: Use 'onnxruntime' (base version) for cross-platform support.
-# ONNX Runtime auto-detects GPU (CUDA/DirectML/CoreML) at runtime.
-# For NVIDIA GPU support on Linux, use onnxruntime-gpu instead.
-# For Windows GPU support, use onnxruntime-directml instead.
+# Pure-Python bundle. Platform-specific backends are resolved at install
+# time via PEP 508 environment markers (`sys_platform`, `platform_machine`),
+# so a single py3-none-any wheel works on Linux, Windows, and macOS.
+#
+# Backend mapping:
+#   Linux   -> onnxruntime-gpu + bundled CUDA/cuDNN/TensorRT (NVIDIA GPU path)
+#   Windows -> onnxruntime-directml (any GPU vendor via DirectML)
+#   macOS   -> onnxruntime (CPU EP); + mlx on Apple Silicon for Metal GPU
+#
+# Only one onnxruntime variant is ever installed per OS, so they cannot
+# conflict. CPU EP is always available as fallback inside whichever
+# onnxruntime package gets installed.
 dependencies = [
     "ChimeraX-Core ~=1.1",
     "ChimeraX-UI ~=1.0",
@@ -27,13 +34,25 @@ dependencies = [
     "scipy >=1.7.0",
     "mrcfile >=1.4.0",
     "numba >=0.52.0",
-    "onnxruntime >=1.16.0",
+    # ONNX Runtime: exactly one variant per OS
+    "onnxruntime-gpu >=1.19.0; sys_platform == 'linux'",
+    "onnxruntime-directml >=1.16.0; sys_platform == 'win32'",
+    "onnxruntime >=1.16.0; sys_platform == 'darwin'",
+    # Linux NVIDIA stack: TensorRT EP gives ~356x speedup over CUDA EP on the
+    # 3D-Conv DAQ model. Pulled automatically; adds ~1.5 GB. Non-NVIDIA Linux
+    # users still get a working install (ORT falls back to CPU EP).
+    "tensorrt-cu12 >=10.0.0; sys_platform == 'linux'",
+    "nvidia-cuda-runtime-cu12; sys_platform == 'linux'",
+    "nvidia-cudnn-cu12 >=9.0.0; sys_platform == 'linux'",
+    "nvidia-cublas-cu12; sys_platform == 'linux'",
+    "nvidia-cufft-cu12; sys_platform == 'linux'",
+    "nvidia-curand-cu12; sys_platform == 'linux'",
+    "nvidia-cusolver-cu12; sys_platform == 'linux'",
+    "nvidia-cusparse-cu12; sys_platform == 'linux'",
+    # macOS Apple Silicon: MLX framework for Metal GPU compute.
+    # No x86_64 mlx wheel exists; Intel Mac falls back to ORT CPU.
+    "mlx >=0.20.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
-
-# Optional dependencies for GPU support
-# NOTE: Only ONE onnxruntime variant can be installed at a time!
-# Install GPU support with: pip install onnxruntime-gpu  (Linux/NVIDIA)
-# Or: pip install onnxruntime-directml  (Windows)
 
 [project.readme]
 content-type = "text/markdown"
@@ -88,9 +107,6 @@ classifiers = [
 ]
 # Commands and tools are defined in [chimerax.command.*] and [chimerax.tool.*] sections below
 # which auto-generate the required classifiers
-
-[chimerax.package-data]
-"src/data" = ["*.npz"]
 
 [chimerax.command."daqcolor apply"]
 category = "General"

@@ -869,11 +869,13 @@ def _load_or_cache(backend: str, model_path: Optional[str],
 
     if backend in _MLX_BACKENDS:
         from .mlx_model import DAQMLXModel, get_mlx_weights_path
-        mlx_weights = get_mlx_weights_path()
+        mlx_weights = get_mlx_weights_path(auto_download=True)
         if mlx_weights is None:
             raise FileNotFoundError(
-                "MLX weights (Multimodel.mlx.npz) not found; "
-                "run tools/convert_pth_to_mlx.py to generate")
+                "MLX weights (Multimodel.mlx.npz) not found locally and "
+                "could not be downloaded from Hugging Face. Check the network "
+                "connection, or set DAQ_MLX_WEIGHTS to a local copy. The file "
+                "can also be regenerated with tools/convert_pth_to_mlx.py.")
         file_str = str(mlx_weights.resolve())
         cache_key = (backend, 0, file_str)
         if cache_key in _model_cache:

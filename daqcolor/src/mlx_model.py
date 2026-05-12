@@ -356,16 +356,53 @@ class DAQMLXModel:
 # ---------- weights file path ----------
 
 MLX_WEIGHTS_FILENAME = "Multimodel.mlx.npz"
+MLX_WEIGHTS_URL = (
+    "https://huggingface.co/zhtronics/DAQscore/resolve/main/Multimodel.mlx.npz"
+)
 
 
-def get_mlx_weights_path(auto_download: bool = False) -> Optional[Path]:
-    """Locate the converted MLX weights.
+def download_mlx_weights(dest_path: Path, url: str = MLX_WEIGHTS_URL) -> bool:
+    """Download the converted MLX weights to dest_path. Mirrors
+    onnx_model.download_model() so behaviour and progress reporting match.
+    """
+    import sys
+    import urllib.request
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Downloading DAQ MLX weights from {url}...")
+    print(f"Destination: {dest_path}")
+
+    def _progress(block_num, block_size, total_size):
+        if total_size <= 0:
+            return
+        downloaded = block_num * block_size
+        percent = min(100, downloaded * 100 / total_size)
+        mb_downloaded = downloaded / (1024 * 1024)
+        mb_total = total_size / (1024 * 1024)
+        sys.stdout.write(
+            f"\rProgress: {percent:.1f}% ({mb_downloaded:.1f}/{mb_total:.1f} MB)")
+        sys.stdout.flush()
+
+    try:
+        urllib.request.urlretrieve(url, str(dest_path), reporthook=_progress)
+        print("\nDownload complete!")
+        return True
+    except Exception as e:
+        print(f"\nMLX weights download failed: {e}")
+        if dest_path.exists():
+            dest_path.unlink()
+        return False
+
+
+def get_mlx_weights_path(auto_download: bool = True) -> Optional[Path]:
+    """Locate the converted MLX weights, downloading from Hugging Face on
+    first use if missing.
 
     Search order mirrors get_model_path() for the ONNX file:
       1. DAQ_MLX_WEIGHTS env var
       2. Plugin data/ directory (installed)
       3. Plugin data/ directory (development)
-      4. ~/.chimerax/daq_model/Multimodel.mlx.npz
+      4. ~/.chimerax/daq_model/Multimodel.mlx.npz  (also download target)
     """
     import os
     candidates = []
@@ -375,8 +412,15 @@ def get_mlx_weights_path(auto_download: bool = False) -> Optional[Path]:
     module_dir = Path(__file__).parent
     candidates.append(module_dir / "data" / MLX_WEIGHTS_FILENAME)
     candidates.append(module_dir.parent / "data" / MLX_WEIGHTS_FILENAME)
-    candidates.append(Path.home() / ".chimerax" / "daq_model" / MLX_WEIGHTS_FILENAME)
+    user_path = Path.home() / ".chimerax" / "daq_model" / MLX_WEIGHTS_FILENAME
+    candidates.append(user_path)
     for p in candidates:
         if p.exists():
             return p
+
+    if auto_download:
+        print("DAQ: MLX weights not found locally; downloading from Hugging Face.")
+        if download_mlx_weights(user_path):
+            return user_path
+
     return None

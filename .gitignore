@@ -217,3 +217,9 @@ clean.sh
 .DS_Store
 # Claude Code local guidance (not for distribution)
 CLAUDE.md
+
+# MLX weights: lazy-downloaded from Hugging Face on first use.
+# Keep out of the tree (and out of the wheel) so all platforms ship a small
+# bundle. Regeneration: tools/convert_pth_to_mlx.py.
+daqcolor/src/data/*.npz
+daqcolor/data/*.npz

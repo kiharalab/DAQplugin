@@ -20,7 +20,7 @@ If you use DAQplugin, please cite the following paper:
 
 - [Quick Start](#quick-start)
 - [Installation](#installation-on-chimerax-toolshed)
-- [Installation from Prebuilt Wheels](#installation-from-prebuilt-wheels)
+- [Installation from Prebuilt Wheel](#installation-from-prebuilt-wheel)
 - [1. DAQ Score Computation (Jupyter Notebooks)](#1-daq-score-and-npy-file-computation-jupyter-notebook-on-google-colab)
   - [Grid-based Notebook](#notebook)
   - [PDB-based Notebook](#daq-score-pdb-notebook)
@@ -37,7 +37,7 @@ If you use DAQplugin, please cite the following paper:
 - [3. Command-Line Usage (CLI)](#3-command-line-usage-cli)
 - [Notes](#notes)
 - [License](#license)
-- Appendix: [GPU Acceleration and Backends](#gpu-acceleration-and-backends), [Building Platform Wheels](#building-platform-wheels)
+- Appendix: [GPU Acceleration and Backends](#gpu-acceleration-and-backends), [Building the Wheel](#building-the-wheel)
 
 ---
 
@@ -53,8 +53,8 @@ DAQplugin/
 ├── DAQ/                       # DAQ core (git submodule)
 ├── daqcolor/                  # ChimeraX plugin
 │   ├── src/                   # plugin source (commands, compute, ONNX/MLX backends, GUI)
-│   ├── pyproject.toml         # bundle metadata + platform-aware dependency lists
-│   ├── build_wheels.py        # produces platform-tagged wheels for distribution
+│   ├── pyproject.toml         # bundle metadata; backends gated by PEP 508 markers
+│   ├── build_wheels.py        # builds the single py3-none-any wheel
 │   ├── wheels/                # output of build_wheels.py (generated)
 │   └── LICENSE
 ├── cli/                       # Command-line scripts
@@ -73,31 +73,29 @@ DAQplugin/
 
 ## Installation on ChimeraX Toolshed
 - In the Menu bar: Tools > More Tools > DAQplugin page > Click [Download]
-- ChimeraX picks the right wheel for your platform automatically (Linux/NVIDIA, Windows, macOS Apple Silicon, macOS Intel, or generic CPU).
+- A single cross-platform wheel is published; pip resolves the right backend stack (TensorRT/CUDA on Linux, DirectML on Windows, ORT-CPU + MLX on macOS) at install time using PEP 508 environment markers.
 
 ### Start GUI
 - Tools > Validation > DAQplugin
 
 ---
 
-## Installation from Prebuilt Wheels
+## Installation from Prebuilt Wheel
 
 If you have a wheel (`.whl`) file directly (e.g. from a GitHub Release), install it inside ChimeraX:
 
 ```bash
-toolshed install /path/to/chimerax_daqplugin-X.Y.Z-py3-none-<platform>.whl
+toolshed install /path/to/chimerax_daqplugin-X.Y.Z-py3-none-any.whl
 ```
 
-The bundle ships as **four** platform-tagged wheels per release:
+The bundle is pure Python and ships as a single `py3-none-any` wheel. Platform-specific backends are pulled from PyPI automatically based on your OS / architecture:
 
-| Wheel tag | Target |
-|-----------|--------|
-| `py3-none-linux_x86_64`         | Linux 64-bit (bundles CUDA + cuDNN + TensorRT — ~1.5 GB) |
-| `py3-none-win_amd64`            | Windows 64-bit (DirectML) |
-| `py3-none-macosx_11_0_universal2` | macOS 11.0+ (one wheel covers both Apple Silicon and Intel; `mlx` is gated by a PEP 508 environment marker) |
-| `py3-none-any`                  | Generic CPU fallback (any platform without a GPU path) |
-
-Pip / `toolshed install` picks the most specific match for your host. Reinstall the appropriate wheel after upgrading.
+| Host | Auto-installed extras |
+|------|------------------------|
+| Linux x86_64        | `onnxruntime-gpu` + bundled CUDA / cuDNN / TensorRT (~1.5 GB; NVIDIA path, CPU fallback works without a GPU) |
+| Windows x86_64      | `onnxruntime-directml` (covers NVIDIA / AMD / Intel GPUs) |
+| macOS Apple Silicon | `onnxruntime` + `mlx` (Metal backend) |
+| macOS Intel         | `onnxruntime` (CPU only — no MLX wheel for x86_64) |
 
 ## Use GUI
 <img src="img/gui1.png" width="300">
@@ -710,19 +708,18 @@ The plugin auto-selects an inference batch size per backend (TRT 2048, CUDA 1024
 
 ---
 
-## Building Platform Wheels
+## Building the Wheel
 
 <details>
-<summary>Click to expand — prerequisites, build commands, internals, Toolshed submission</summary>
+<summary>Click to expand — prerequisites, build commands, Toolshed submission</summary>
 
-The build script `daqcolor/build_wheels.py` produces all platform wheels from a single source tree.
+The bundle is pure Python: a single `py3-none-any` wheel covers Linux, Windows, and macOS. Per-OS backends (ONNX Runtime variant, CUDA/TensorRT stack on Linux, MLX on Apple Silicon) are resolved at install time via PEP 508 environment markers in `pyproject.toml`.
 
 ### Prerequisites
 
-- A ChimeraX install (the build uses ChimeraX's bundled Python, which ships `ChimeraX-BundleBuilder`; the bundle builder is **not** on PyPI).
-- The `wheel` package (already in ChimeraX's Python).
+- A ChimeraX install — the build uses ChimeraX's bundled Python, which ships `ChimeraX-BundleBuilder`. The bundle builder is **not** on PyPI.
 
-### Build all wheels
+### Build
 
 From the repository root:
 
@@ -731,29 +728,11 @@ cd daqcolor
 python build_wheels.py
 ```
 
-This produces 4 wheels under `daqcolor/wheels/`:
+Output:
 
 ```
-chimerax_daqplugin-X.Y.Z-py3-none-linux_x86_64.whl
-chimerax_daqplugin-X.Y.Z-py3-none-win_amd64.whl
-chimerax_daqplugin-X.Y.Z-py3-none-macosx_11_0_universal2.whl
-chimerax_daqplugin-X.Y.Z-py3-none-any.whl
+daqcolor/wheels/chimerax_daqplugin-X.Y.Z-py3-none-any.whl
 ```
-
-### Build a specific platform
-
-```bash
-python build_wheels.py --platforms linux-bundled-cuda
-python build_wheels.py --platforms linux-bundled-cuda,win,mac,cpu  # default set
-python build_wheels.py --platforms all                              # adds linux-system-cuda
-```
-
-### How the build works
-
-1. `pyproject.toml` is patched in-place per platform to inject the platform-specific dependency list defined in `build_wheels.py:PLATFORM_DEPS`.
-2. ChimeraX's bundled `python -m build` produces a pure-Python `py3-none-any` wheel.
-3. The wheel is post-processed with `python -m wheel tags` to apply the correct PEP 425 platform tag (e.g. `linux_x86_64`).
-4. Output is moved to `daqcolor/wheels/`. Original `pyproject.toml` is restored when done.
 
 ### Override ChimeraX detection
 
@@ -764,6 +743,6 @@ python build_wheels.py --out /custom/output/dir
 
 ### Submit to ChimeraX Toolshed
 
-Wheels are standard Python wheels. Sign in at <https://cxtoolshed.rbvi.ucsf.edu/> (Google OAuth required), use **Submit a Bundle**, and upload each platform wheel separately. The first submission per bundle requires manual approval by ChimeraX staff; subsequent uploads auto-publish.
+Sign in at <https://cxtoolshed.rbvi.ucsf.edu/> (Google OAuth required), use **Submit a Bundle**, and upload the single wheel. The first submission per bundle requires manual approval by ChimeraX staff; subsequent versions auto-publish.
 
 </details>
