@@ -20,9 +20,7 @@ If you use DAQplugin, please cite the following paper:
 
 - [Quick Start](#quick-start)
 - [Installation](#installation-on-chimerax-toolshed)
-- [GPU Acceleration and Backends](#gpu-acceleration-and-backends)
 - [Installation from Prebuilt Wheels](#installation-from-prebuilt-wheels)
-- [Building Platform Wheels](#building-platform-wheels)
 - [1. DAQ Score Computation (Jupyter Notebooks)](#1-daq-score-and-npy-file-computation-jupyter-notebook-on-google-colab)
   - [Grid-based Notebook](#notebook)
   - [PDB-based Notebook](#daq-score-pdb-notebook)
@@ -39,6 +37,7 @@ If you use DAQplugin, please cite the following paper:
 - [3. Command-Line Usage (CLI)](#3-command-line-usage-cli)
 - [Notes](#notes)
 - [License](#license)
+- Appendix: [GPU Acceleration and Backends](#gpu-acceleration-and-backends), [Building Platform Wheels](#building-platform-wheels)
 
 ---
 
@@ -81,42 +80,6 @@ DAQplugin/
 
 ---
 
-## GPU Acceleration and Backends
-
-DAQplugin runs inference through one of several backends. The plugin auto-selects the best one for your platform on first use; you can also force a specific backend from the GUI **Backend** dropdown or via the `backend` command parameter.
-
-| Platform | Backends (auto fallback chain)                    | Notes |
-|----------|----------------------------------------------------|-------|
-| Linux (NVIDIA)  | TensorRT → CUDA → CPU                       | TRT engines cached at `~/.chimerax/daq_model/trt_cache/` (first build ~10 s, cached ~0.5 s). Multi-GPU: pick device with `gpu_id N`. |
-| Windows  | TensorRT → DirectML → CPU                          | DirectML supports any GPU vendor (NVIDIA/AMD/Intel). TensorRT requires a separately installed NVIDIA toolkit. |
-| macOS (Apple Silicon) | MLX-Metal → MLX-CPU → ORT-CPU         | MLX uses the unified GPU and Accelerate/AMX coprocessor. |
-| macOS (Intel)         | ORT-CPU                                   | No MLX wheel exists for x86_64 Mac. |
-| Any (CPU fallback)    | ORT-CPU                                   | Used when no GPU backend is available. |
-
-**Choosing a backend manually** (CLI):
-
-```bash
-# Force CPU even if a GPU is available
-daqscore compute_grid #1 0.5 backend cpu
-
-# Force TensorRT on a multi-GPU Linux box, use device 1
-daqscore compute_grid #1 0.5 backend tensorrt gpu_id 1
-```
-
-**Throughput (RTX 6000 Ada, 11³ patches/s)**:
-
-| Backend     | Peak     | Notes                                    |
-|-------------|----------|------------------------------------------|
-| TensorRT    | ~817K p/s | Best on NVIDIA; engine cached after first run. |
-| CUDA EP     | ~308K p/s | Falls back to TRT-cached layouts when available. |
-| DirectML    | ~30K p/s  | Cross-vendor GPU on Windows.             |
-| MLX Metal   | varies    | Apple Silicon. Beats ORT-CPU significantly. |
-| ORT-CPU     | ~2K p/s   | Reliable fallback everywhere.            |
-
-The plugin auto-selects an inference batch size per backend (TRT 2048, CUDA 1024, DirectML/CPU 256). Override with `batch_size N` in the GUI or CLI, or set `DAQ_BATCH_OVERRIDE=<n>` to globally override for benchmarking.
-
----
-
 ## Installation from Prebuilt Wheels
 
 If you have a wheel (`.whl`) file directly (e.g. from a GitHub Release), install it inside ChimeraX:
@@ -135,61 +98,6 @@ The bundle ships as **four** platform-tagged wheels per release:
 | `py3-none-any`                  | Generic CPU fallback (any platform without a GPU path) |
 
 Pip / `toolshed install` picks the most specific match for your host. Reinstall the appropriate wheel after upgrading.
-
----
-
-## Building Platform Wheels
-
-The build script `daqcolor/build_wheels.py` produces all platform wheels from a single source tree.
-
-### Prerequisites
-
-- A ChimeraX install (the build uses ChimeraX's bundled Python, which ships `ChimeraX-BundleBuilder`; the bundle builder is **not** on PyPI).
-- The `wheel` package (already in ChimeraX's Python).
-
-### Build all wheels
-
-From the repository root:
-
-```bash
-cd daqcolor
-python build_wheels.py
-```
-
-This produces 4 wheels under `daqcolor/wheels/`:
-
-```
-chimerax_daqplugin-X.Y.Z-py3-none-linux_x86_64.whl
-chimerax_daqplugin-X.Y.Z-py3-none-win_amd64.whl
-chimerax_daqplugin-X.Y.Z-py3-none-macosx_11_0_universal2.whl
-chimerax_daqplugin-X.Y.Z-py3-none-any.whl
-```
-
-### Build a specific platform
-
-```bash
-python build_wheels.py --platforms linux-bundled-cuda
-python build_wheels.py --platforms linux-bundled-cuda,win,mac,cpu  # default set
-python build_wheels.py --platforms all                              # adds linux-system-cuda
-```
-
-### How the build works
-
-1. `pyproject.toml` is patched in-place per platform to inject the platform-specific dependency list defined in `build_wheels.py:PLATFORM_DEPS`.
-2. ChimeraX's bundled `python -m build` produces a pure-Python `py3-none-any` wheel.
-3. The wheel is post-processed with `python -m wheel tags` to apply the correct PEP 425 platform tag (e.g. `linux_x86_64`).
-4. Output is moved to `daqcolor/wheels/`. Original `pyproject.toml` is restored when done.
-
-### Override ChimeraX detection
-
-```bash
-python build_wheels.py --chimerax /path/to/chimerax-executable
-python build_wheels.py --out /custom/output/dir
-```
-
-### Submit to ChimeraX Toolshed
-
-Wheels are standard Python wheels. Sign in at <https://cxtoolshed.rbvi.ucsf.edu/> (Google OAuth required), use **Submit a Bundle**, and upload each platform wheel separately. The first submission per bundle requires manual approval by ChimeraX staff; subsequent uploads auto-publish.
 
 ## Use GUI
 <img src="img/gui1.png" width="300">
@@ -758,3 +666,104 @@ By default, scores are smoothed using chain-aware window averaging:
 ## License
 
 See the `LICENSE` file for details.
+
+---
+
+## GPU Acceleration and Backends
+
+<details>
+<summary>Click to expand — backend selection, throughput tables, batch tuning</summary>
+
+DAQplugin runs inference through one of several backends. The plugin auto-selects the best one for your platform on first use; you can also force a specific backend from the GUI **Backend** dropdown or via the `backend` command parameter.
+
+| Platform | Backends (auto fallback chain)                    | Notes |
+|----------|----------------------------------------------------|-------|
+| Linux (NVIDIA)  | TensorRT → CUDA → CPU                       | TRT engines cached at `~/.chimerax/daq_model/trt_cache/` (first build ~10 s, cached ~0.5 s). Multi-GPU: pick device with `gpu_id N`. |
+| Windows  | TensorRT → DirectML → CPU                          | DirectML supports any GPU vendor (NVIDIA/AMD/Intel). TensorRT requires a separately installed NVIDIA toolkit. |
+| macOS (Apple Silicon) | MLX-Metal → MLX-CPU → ORT-CPU         | MLX uses the unified GPU and Accelerate/AMX coprocessor. |
+| macOS (Intel)         | ORT-CPU                                   | No MLX wheel exists for x86_64 Mac. |
+| Any (CPU fallback)    | ORT-CPU                                   | Used when no GPU backend is available. |
+
+**Choosing a backend manually** (CLI):
+
+```bash
+# Force CPU even if a GPU is available
+daqscore compute_grid #1 0.5 backend cpu
+
+# Force TensorRT on a multi-GPU Linux box, use device 1
+daqscore compute_grid #1 0.5 backend tensorrt gpu_id 1
+```
+
+**Throughput (RTX 6000 Ada, 11³ patches/s)**:
+
+| Backend     | Peak     | Notes                                    |
+|-------------|----------|------------------------------------------|
+| TensorRT    | ~817K p/s | Best on NVIDIA; engine cached after first run. |
+| CUDA EP     | ~308K p/s | Falls back to TRT-cached layouts when available. |
+| DirectML    | ~30K p/s  | Cross-vendor GPU on Windows.             |
+| MLX Metal   | varies    | Apple Silicon. Beats ORT-CPU significantly. |
+| ORT-CPU     | ~2K p/s   | Reliable fallback everywhere.            |
+
+The plugin auto-selects an inference batch size per backend (TRT 2048, CUDA 1024, DirectML/CPU 256). Override with `batch_size N` in the GUI or CLI, or set `DAQ_BATCH_OVERRIDE=<n>` to globally override for benchmarking.
+
+</details>
+
+---
+
+## Building Platform Wheels
+
+<details>
+<summary>Click to expand — prerequisites, build commands, internals, Toolshed submission</summary>
+
+The build script `daqcolor/build_wheels.py` produces all platform wheels from a single source tree.
+
+### Prerequisites
+
+- A ChimeraX install (the build uses ChimeraX's bundled Python, which ships `ChimeraX-BundleBuilder`; the bundle builder is **not** on PyPI).
+- The `wheel` package (already in ChimeraX's Python).
+
+### Build all wheels
+
+From the repository root:
+
+```bash
+cd daqcolor
+python build_wheels.py
+```
+
+This produces 4 wheels under `daqcolor/wheels/`:
+
+```
+chimerax_daqplugin-X.Y.Z-py3-none-linux_x86_64.whl
+chimerax_daqplugin-X.Y.Z-py3-none-win_amd64.whl
+chimerax_daqplugin-X.Y.Z-py3-none-macosx_11_0_universal2.whl
+chimerax_daqplugin-X.Y.Z-py3-none-any.whl
+```
+
+### Build a specific platform
+
+```bash
+python build_wheels.py --platforms linux-bundled-cuda
+python build_wheels.py --platforms linux-bundled-cuda,win,mac,cpu  # default set
+python build_wheels.py --platforms all                              # adds linux-system-cuda
+```
+
+### How the build works
+
+1. `pyproject.toml` is patched in-place per platform to inject the platform-specific dependency list defined in `build_wheels.py:PLATFORM_DEPS`.
+2. ChimeraX's bundled `python -m build` produces a pure-Python `py3-none-any` wheel.
+3. The wheel is post-processed with `python -m wheel tags` to apply the correct PEP 425 platform tag (e.g. `linux_x86_64`).
+4. Output is moved to `daqcolor/wheels/`. Original `pyproject.toml` is restored when done.
+
+### Override ChimeraX detection
+
+```bash
+python build_wheels.py --chimerax /path/to/chimerax-executable
+python build_wheels.py --out /custom/output/dir
+```
+
+### Submit to ChimeraX Toolshed
+
+Wheels are standard Python wheels. Sign in at <https://cxtoolshed.rbvi.ucsf.edu/> (Google OAuth required), use **Submit a Bundle**, and upload each platform wheel separately. The first submission per bundle requires manual approval by ChimeraX staff; subsequent uploads auto-publish.
+
+</details>
