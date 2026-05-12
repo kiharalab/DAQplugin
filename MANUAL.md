@@ -19,7 +19,8 @@ https://www.nature.com/articles/s41592-022-01574-4
 4. In the **Parameters** tab, check:
    - **Contour**: density threshold for grid sampling
    - **Stride**: grid sampling interval, default `2`
-   - **Batch size**: inference batch size, default `512`
+   - **Batch size**: inference batch size, default `Auto` (picks the tuned default per backend)
+   - **Backend**: inference path, default `Auto` (per-platform fallback chain — TensorRT/CUDA on Linux/NVIDIA, DirectML on Windows, MLX on Apple Silicon)
 5. Return to **Main** and click **Calculate DAQ Scores**.
 6. Click **Color Structure** to color the selected model.
 7. Optional: click **Start Live Update** to monitor score changes while the model moves.
@@ -78,7 +79,7 @@ Supported coloring metrics:
 - `ss_score`: DAQ(SS), secondary-structure agreement.
 - `aa_conf:<AA>`: confidence for a specific amino-acid type, for example `aa_conf:ALA`.
 
-DAQplugin uses CPU inference inside ChimeraX. For very large maps or limited local CPU resources, use the Google Colab notebook to generate the `.npy` file, then visualize it in ChimeraX:
+DAQplugin runs inference through one of several GPU/CPU backends, auto-selected for your platform. See [GPU Acceleration and Backends](#gpu-acceleration-and-backends) below. For very large maps that exceed local GPU memory, use the Google Colab notebook to generate the `.npy` file, then visualize it in ChimeraX:
 
 - [DAQ_Score_Grid.ipynb](https://colab.research.google.com/github/gterashi/DAQplugin/blob/main/DAQ_Score_Grid.ipynb)
 
@@ -120,9 +121,10 @@ Start the GUI from **Tools > Validation > DAQplugin**.
 
 **Compute Settings**
 
-- **Batch size**: samples per inference batch, default `512`.
-- **Use GPU**: CURRENTLY NOT AVAILABLE. Coming Soon.
-  
+- **Batch size**: samples per inference batch, default `Auto`. Auto picks the tuned default per backend (TensorRT 2048, CUDA 1024, DirectML/CPU 256). Set a numeric value to override (e.g. to avoid OOM on a small GPU).
+- **Backend**: inference path, default `Auto`. Auto follows the per-platform fallback chain. Force a specific backend (`TensorRT`, `CUDA`, `DirectML`, `MLX (Metal)`, `MLX (CPU)`, `CPU`) to skip the chain.
+- **GPU device** (Linux only): NVIDIA device picker for multi-GPU hosts. Active for `tensorrt`/`cuda` backends.
+
 **Grid Settings**
 
 - **Contour**: density threshold for sampling grid points. This usually matches the map display contour.
@@ -162,7 +164,7 @@ This tab shows chain ID, residue ID, amino-acid name, and window-averaged DAQ sc
 Compute DAQ scores from a cryo-EM map by sampling grid points above a contour threshold.
 
 ```chimerax
-daqscore compute_grid mapInput contour [structure #model] [output npyPath] [stride N] [batch_size N] [max_points N] [ckpt ckptPath] [metric metricName] [k N] [colormap cmap] [half_window N] [monitor true|false]
+daqscore compute_grid mapInput contour [structure #model] [output npyPath] [stride N] [batch_size N] [max_points N] [ckpt ckptPath] [metric metricName] [k N] [colormap cmap] [half_window N] [monitor true|false] [backend name] [gpu_id N]
 ```
 
 Parameters:
@@ -172,7 +174,7 @@ Parameters:
 - `structure`: optional model to color after computation.
 - `output`: output `.npy` path. If omitted, an output name is generated.
 - `stride`: grid sampling interval, default `2`.
-- `batch_size`: inference batch size, default `512`.
+- `batch_size`: inference batch size, default `0` (Auto — picks the tuned default per backend).
 - `max_points`: maximum sampled grid points, default `500000`.
 - `ckpt`: optional ONNX model path. The bundled model is used by default.
 - `metric`: coloring metric used if `structure` is supplied, default `aa_score`.
@@ -180,6 +182,8 @@ Parameters:
 - `colormap`: optional ChimeraX colormap.
 - `half_window`: residue-number half-window for smoothing, default `9`.
 - `monitor`: if `true` and `structure` is supplied, start `daqcolor monitor`.
+- `backend`: inference backend, default `auto`. Choices: `auto`, `tensorrt`, `cuda`, `directml`, `mlx`, `mlx-cpu`, `cpu`. See [GPU Acceleration and Backends](#gpu-acceleration-and-backends).
+- `gpu_id`: NVIDIA device ID for `tensorrt`/`cuda` backends on multi-GPU Linux hosts, default `0`. Ignored by other backends.
 
 Examples:
 
@@ -195,7 +199,7 @@ daqscore compute_grid /path/to/map.mrc 0.5 output /path/to/output.npy
 Compute DAQ scores using heavy atom positions from a structure as query points instead of grid points from the map. This is suitable for atom-position-based evaluation and comparison with the original DAQ workflow. Monitoring is not started by this command.
 
 ```chimerax
-daqscore compute_pdb mapInput structure #model [output npyPath] [batch_size N] [ckpt ckptPath] [metric metricName] [k N] [colormap cmap] [half_window N] [apply_color true|false] [save_model modelPath]
+daqscore compute_pdb mapInput structure #model [output npyPath] [batch_size N] [ckpt ckptPath] [metric metricName] [k N] [colormap cmap] [half_window N] [apply_color true|false] [save_model modelPath] [backend name] [gpu_id N]
 ```
 
 Parameters:
@@ -203,7 +207,7 @@ Parameters:
 - `mapInput`: MRC/MAP file path or loaded ChimeraX volume model, for example `#1`.
 - `structure`: required atomic model.
 - `output`: output `.npy` path. If omitted, an output name is generated.
-- `batch_size`: inference batch size, default `512`.
+- `batch_size`: inference batch size, default `0` (Auto — picks the tuned default per backend).
 - `ckpt`: optional ONNX model path. The bundled model is used by default.
 - `metric`: coloring metric, default `aa_score`.
 - `k`: nearest-neighbor count for coloring, default `1`.
@@ -211,6 +215,8 @@ Parameters:
 - `half_window`: residue-number half-window for smoothing, default `9`.
 - `apply_color`: apply coloring after computation, default `true`.
 - `save_model`: optional PDB/mmCIF path. Scores are saved in B-factors.
+- `backend`: inference backend, default `auto`. See [GPU Acceleration and Backends](#gpu-acceleration-and-backends).
+- `gpu_id`: NVIDIA device ID for `tensorrt`/`cuda` backends on multi-GPU Linux hosts, default `0`.
 
 Examples:
 
@@ -302,6 +308,33 @@ daq clearrestraints #2
 
 <img src="https://github.com/gterashi/DAQplugin/blob/main/img/with_arrow.png?raw=true" width="300">
 <img src="https://github.com/gterashi/DAQplugin/blob/main/img/arrow.png?raw=true" width="300">
+
+## GPU Acceleration and Backends
+
+DAQplugin runs inference through one of several backends. The plugin auto-selects the best one for your platform on first use, with a fallback chain when the preferred backend fails to initialize. The active backend is printed to the ChimeraX log as `DAQ: backend='...'`.
+
+| Platform | Fallback chain | Notes |
+|----------|----------------|-------|
+| Linux (NVIDIA)        | TensorRT → CUDA → CPU             | TRT engines cached at `~/.chimerax/daq_model/trt_cache/` (first build ~10 s, subsequent ~0.5 s). |
+| Windows               | TensorRT → DirectML → CPU         | DirectML covers any GPU vendor (NVIDIA/AMD/Intel). |
+| macOS (Apple Silicon) | MLX-Metal → MLX-CPU → ORT-CPU     | MLX uses the unified GPU and the Accelerate/AMX coprocessor. |
+| macOS (Intel)         | ORT-CPU                           | No MLX wheel exists for x86_64 Mac. |
+
+**GUI**: pick from the **Backend** dropdown in the Parameters tab. The **GPU device** dropdown is shown on Linux only and selects the NVIDIA device for TensorRT/CUDA.
+
+**Command line**: pass `backend NAME` and (Linux NVIDIA) `gpu_id N`.
+
+```chimerax
+daqscore compute_grid #1 0.5 backend tensorrt gpu_id 1
+daqscore compute_grid #1 0.5 backend cpu
+daqcolor monitor #2 npy_path ./daq_scores.npy backend cuda
+```
+
+Available backend names: `auto`, `tensorrt`, `cuda`, `directml`, `mlx`, `mlx-cpu`, `cpu`.
+
+**Batch size**: auto-selected per backend (TensorRT 2048, CUDA 1024, DirectML/CPU 256). Override via the GUI **Batch size** field or `batch_size N` on the command line. Lower batch sizes reduce memory but may underutilize the GPU. Set the env var `DAQ_BATCH_OVERRIDE=<n>` for one-shot benchmarking.
+
+**TensorRT engine cache**: shared across launches. Delete `~/.chimerax/daq_model/trt_cache/` to force a rebuild (e.g., after a driver upgrade).
 
 ## Window Averaging
 

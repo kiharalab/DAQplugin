@@ -7,8 +7,40 @@ Provides DAQ score computation and visualization for cryo-EM models.
 from chimerax.core.toolshed import BundleAPI
 
 
+def _release_daq_models(*_args, **_kwargs):
+    """Free cached ORT/MLX models before Python interpreter teardown.
+
+    ORT-CUDA InferenceSession holds the CUDA context + workspace; if the
+    interpreter exits while the session is still referenced, the CUDA
+    driver cleanup ordering can deadlock and the chimerax process hangs
+    after the GUI closes. Calling clear_model_cache() here releases the
+    sessions while the bundle module is still importable.
+    """
+    try:
+        from .onnx_model import clear_model_cache
+        clear_model_cache()
+    except Exception:
+        pass
+
+
 class _API(BundleAPI):
     api_version = 1
+
+    @staticmethod
+    def initialize(session, bi):
+        """Wire app-quit cleanup. Fires once per session startup."""
+        try:
+            session.triggers.add_handler("app quit", _release_daq_models)
+        except Exception:
+            # Older ChimeraX may not have the 'app quit' trigger; the
+            # bundle remains functional, only the shutdown-hang fix is
+            # skipped.
+            pass
+
+    @staticmethod
+    def finish(session, bi):
+        """Called when the bundle is unloaded; release backends now."""
+        _release_daq_models()
 
     #GUI tool
     @staticmethod
@@ -29,6 +61,7 @@ class _API(BundleAPI):
     
     @staticmethod
     def register_command(bi, ci, logger):
+        print(f"DEBUG: Registering command {ci.name}")
         from . import cmd
         
         # Visualization commands (daqcolor)

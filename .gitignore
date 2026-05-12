@@ -11,6 +11,7 @@ __pycache__/
 build/
 develop-eggs/
 dist/
+dist_platforms/
 downloads/
 eggs/
 .eggs/
@@ -214,3 +215,5 @@ DiffModeler/
 clean.sh
 
 .DS_Store
+# Claude Code local guidance (not for distribution)
+CLAUDE.md

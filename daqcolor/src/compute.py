@@ -8,7 +8,7 @@ using ChimeraX's native volume handling and ONNX Runtime for inference.
 
 import numpy as np
 from pathlib import Path
-from typing import Tuple, Optional, Union
+from typing import Tuple, Optional, Union, Callable
 from time import perf_counter
 
 # Handle imports for both ChimeraX plugin and standalone use
@@ -182,14 +182,9 @@ def find_contour_cutoff(vol_data: np.ndarray, c: float = 0.95, nbins: int = 200)
     float
         Computed contour cutoff value
     """
-    vol = np.asarray(vol_data, dtype=np.float64)
-
-    # Only consider positive density values
-    dens = vol[vol > 0.0]
-    if dens.size == 0:
-        return 0.0
-
-    dmax = float(dens.max())
+    # Flatten and filter positive values in one pass
+    flat = vol_data.ravel()
+    dmax = float(flat.max())
     if dmax <= 0.0:
         return 0.0
 
@@ -197,29 +192,23 @@ def find_contour_cutoff(vol_data: np.ndarray, c: float = 0.95, nbins: int = 200)
     if tic <= 0.0:
         return 0.0
 
-    # Compute histogram
-    counts, edges = np.histogram(dens, bins=nbins, range=(0.0, dmax))
+    # Compute histogram directly on flat array (faster than filtering first)
+    counts, _ = np.histogram(flat[flat > 0.0], bins=nbins, range=(0.0, dmax))
 
-    # Log-transform counts
-    log_counts = np.zeros_like(counts, dtype=np.float64)
-    mask_pos = counts > 0
-    log_counts[mask_pos] = np.log(counts[mask_pos])
+    # Log-transform counts (vectorized)
+    with np.errstate(divide='ignore'):
+        log_counts = np.where(counts > 0, np.log(counts), 0.0)
 
-    total_sum = float(log_counts[mask_pos].sum())
+    total_sum = log_counts.sum()
     if total_sum <= 0.0:
         return 0.0
 
     sum_cut = total_sum * c
 
-    # Find cutoff bin
-    cumsum = 0.0
-    cutoff_bin = 0
-    for i, lc in enumerate(log_counts):
-        if lc > 0.0:
-            cumsum += lc
-            if cumsum >= sum_cut:
-                cutoff_bin = i
-                break
+    # Find cutoff bin using cumsum (vectorized)
+    cumsum = np.cumsum(log_counts)
+    cutoff_indices = np.where(cumsum >= sum_cut)[0]
+    cutoff_bin = cutoff_indices[0] if len(cutoff_indices) > 0 else 0
 
     return float(tic * cutoff_bin)
 
@@ -242,7 +231,8 @@ def normalize_volume(vol_data: np.ndarray, p_low: float = None, p_high: float = 
     np.ndarray
         Normalized volume in range [0, 1]
     """
-    vol = np.maximum(vol_data, 0)  # Clip negative values
+    # Work with float32 to save memory
+    vol = np.clip(vol_data, 0, None).astype(np.float32, copy=False)
 
     if p_low is None or p_high is None:
         # Use DAQ's FindTopX algorithm for p_high
@@ -335,6 +325,42 @@ def extract_threshold_points(
     return points.astype(np.float32), density
 
 
+# Global cache for numba-compiled function
+_numba_extract_fn = None
+
+
+def _get_numba_extract_fn():
+    """Get or create the numba-compiled extraction function."""
+    global _numba_extract_fn
+    if _numba_extract_fn is not None:
+        return _numba_extract_fn
+
+    from numba import njit, prange
+
+    @njit(parallel=True, cache=True)
+    def _extract(padded, centers, patches, r):
+        N = centers.shape[0]
+        ps = 2 * r + 1
+        for i in prange(N):
+            cz, cy, cx = centers[i]
+            for dz in range(ps):
+                for dy in range(ps):
+                    for dx in range(ps):
+                        patches[i, dz, dy, dx] = padded[cz + dz, cy + dy, cx + dx]
+
+    _numba_extract_fn = _extract
+    return _numba_extract_fn
+
+
+def _extract_patches_numpy(padded, centers, patches, r):
+    """Pure numpy patch extraction (fallback)."""
+    N = centers.shape[0]
+    ps = 2 * r + 1
+    for i in range(N):
+        cz, cy, cx = centers[i]
+        patches[i] = padded[cz:cz+ps, cy:cy+ps, cx:cx+ps]
+
+
 def extract_patches(
     vol_data: np.ndarray,
     points: np.ndarray,
@@ -345,6 +371,9 @@ def extract_patches(
 ) -> np.ndarray:
     """
     Extract 3D patches centered at each point.
+
+    Uses numba for parallel extraction if available, otherwise falls back
+    to optimized numpy loop.
 
     Parameters
     ----------
@@ -375,35 +404,38 @@ def extract_patches(
     # Convert world coordinates to voxel indices (XYZ)
     voxel_idx_xyz = (points - origin_xyz) / step_xyz
 
-    # Convert to ZYX for indexing
-    voxel_idx_zyx = voxel_idx_xyz[:, ::-1]
+    # Convert to ZYX for indexing and round to integers
+    voxel_centers = np.round(voxel_idx_xyz[:, ::-1]).astype(np.int32)
 
+    # Pad volume to handle boundary cases (pad with zeros)
+    padded = np.pad(vol_data, pad_width=r, mode='constant', constant_values=0)
+
+    # Centers point to top-left corner of patch in padded volume
+    # (voxel_centers is already the center in original volume,
+    #  adding r from padding makes it the center in padded volume,
+    #  then we use it directly since we iterate from 0 to patch_size)
+    centers = voxel_centers + r - r  # This equals voxel_centers, but conceptually: center_in_padded - r = corner
+    # Actually: center in padded = voxel_centers + r (due to padding)
+    # Corner = center - r = voxel_centers + r - r = voxel_centers
+    # But we need to clip to valid range
+    Dz, Dy, Dx = vol_data.shape
+    centers[:, 0] = np.clip(voxel_centers[:, 0], 0, Dz - 1)
+    centers[:, 1] = np.clip(voxel_centers[:, 1], 0, Dy - 1)
+    centers[:, 2] = np.clip(voxel_centers[:, 2], 0, Dx - 1)
+
+    # Pre-allocate output
     patches = np.zeros((N, patch_size, patch_size, patch_size), dtype=np.float32)
 
-    Dz, Dy, Dx = vol_data.shape
+    # Try numba first (much faster, parallel), fall back to numpy
+    padded_f32 = padded.astype(np.float32)
+    try:
+        extract_fn = _get_numba_extract_fn()
+        extract_fn(padded_f32, centers, patches, r)
+    except (ImportError, Exception):
+        # Numba not available or failed, use numpy fallback
+        _extract_patches_numpy(padded_f32, centers, patches, r)
 
-    for i in range(N):
-        cz, cy, cx = np.round(voxel_idx_zyx[i]).astype(int)
-
-        # Patch bounds in volume
-        z0, z1 = cz - r, cz + r + 1
-        y0, y1 = cy - r, cy + r + 1
-        x0, x1 = cx - r, cx + r + 1
-
-        # Valid volume region
-        vz0, vz1 = max(0, z0), min(Dz, z1)
-        vy0, vy1 = max(0, y0), min(Dy, y1)
-        vx0, vx1 = max(0, x0), min(Dx, x1)
-
-        # Corresponding patch region
-        pz0, pz1 = vz0 - z0, vz1 - z0
-        py0, py1 = vy0 - y0, vy1 - y0
-        px0, px1 = vx0 - x0, vx1 - x0
-
-        patches[i, pz0:pz1, py0:py1, px0:px1] = vol_data[vz0:vz1, vy0:vy1, vx0:vx1]
-
-    # Swap XZ axes for model: (N, Z, Y, X) -> (N, X, Y, Z) -> transpose to (N, Z, Y, X)
-    # Actually the model expects (N, 1, Z, Y, X) after swapping
+    # Swap XZ axes for model
     if swap_xz:
         patches = np.transpose(patches, (0, 3, 2, 1))  # (N, X, Y, Z)
 
@@ -483,10 +515,12 @@ def compute_daq_scores(
     output_path: Optional[Union[str, Path]] = None,
     contour: float = 0.0,
     stride: int = 2,
-    batch_size: int = 512,
+    batch_size: int = 0,
     max_points: int = 500000,
     model_path: Optional[str] = None,
-    progress_callback: Optional[callable] = None,
+    progress_callback: Optional[Callable] = None,
+    gpu_id: int = 0,
+    backend: str = "auto",
 ) -> Tuple[np.ndarray, np.ndarray, Optional[Path], dict]:
     """
     Full DAQ score computation pipeline.
@@ -504,13 +538,18 @@ def compute_daq_scores(
     stride : int
         Stride for point sampling (default: 2)
     batch_size : int
-        Batch size for inference (default: 512)
+        Batch size for inference (0 = auto)
     max_points : int
         Maximum number of points (default: 500000)
     model_path : str, optional
         Path to ONNX model (uses bundled model if None)
     progress_callback : callable, optional
         Progress callback function(current, total, message)
+    gpu_id : int
+        NVIDIA device id for tensorrt/cuda backends.
+    backend : str
+        Inference backend: "auto" (platform chain), "tensorrt", "cuda",
+        "directml", "mlx", "mlx-cpu", or "cpu". See onnx_model.load_model.
 
     Returns
     -------
@@ -518,6 +557,13 @@ def compute_daq_scores(
         (points, scores, actual_output_path) where scores is (N, 32) array
         and actual_output_path is the Path where the file was saved (or None if not saved)
     """
+    import time
+
+    timings = {
+        "input_data_processing": 0.0,
+        "daq_computing": 0.0,
+        "score_assignment": 0.0,
+    }
 
     def update_progress(current, total, msg=""):
         if progress_callback:
@@ -525,11 +571,10 @@ def compute_daq_scores(
         else:
             session.logger.status(f"{msg} ({current}/{total})")
 
-    timings = {
-        "input_data_processing": 0.0,
-        "daq_computing": 0.0,
-        "score_assignment": 0.0,
-    }
+    # Pipeline start measures steps 1-4 (resample + extract + patches) as
+    # the user-visible "input_data_processing" bucket. Each step also
+    # records its own sub-key for fine-grained timing logs.
+    pipeline_start = perf_counter()
 
     # Step 1: Unify and resample volume
     update_progress(0, 6, "Unifying and resampling volume...")
@@ -547,6 +592,7 @@ def compute_daq_scores(
 
     # Then resample
     vol = resize_map_to_1a(session, map_input_unified)
+    timings['1_resample'] = time.perf_counter() - t0
 
     # Check if a new volume was created (resampling happened)
     volumes_after = set(m for m in session.models.list() if isinstance(m, Volume))
@@ -554,6 +600,7 @@ def compute_daq_scores(
 
     # Step 2: Get volume data
     update_progress(1, 6, "Extracting volume data...")
+    t0 = time.perf_counter()
     data = vol.data.matrix().copy()  # (Z, Y, X) numpy array - copy to detach from volume
     origin = vol.data.origin  # (x, y, z)
     step = vol.data.step  # Should be ~(1, 1, 1) after resample
@@ -571,12 +618,15 @@ def compute_daq_scores(
 
     # Normalize volume
     data_norm = normalize_volume(data)
+    timings['2_volume_data'] = time.perf_counter() - t0
 
     # Step 3: Extract points above contour * 0.5 (more points for better coverage)
     # Reference distribution will be filtered by original contour later
     extraction_contour = contour * 0.5
     update_progress(2, 6, "Extracting grid points...")
+    t0 = time.perf_counter()
     points, density = extract_threshold_points(data, origin, step, contour=extraction_contour, stride=stride, max_points=max_points)
+    timings['3_extract_points'] = time.perf_counter() - t0
 
     n_points = points.shape[0]
     session.logger.info(f"Extracted {n_points} points above contour {extraction_contour} (extraction threshold)")
@@ -584,25 +634,31 @@ def compute_daq_scores(
 
     if n_points == 0:
         session.logger.warning("No points found above contour threshold!")
-        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 32), dtype=np.float32), None
+        timings["input_data_processing"] = perf_counter() - pipeline_start
+        return (np.zeros((0, 3), dtype=np.float32),
+                np.zeros((0, 32), dtype=np.float32),
+                None, timings)
 
     # Step 4: Extract patches
     update_progress(3, 6, f"Extracting {n_points} patches...")
+    t0 = time.perf_counter()
     patches = extract_patches(data_norm, points, origin, step, patch_size=11)
+    timings['4_extract_patches'] = time.perf_counter() - t0
 
-    t1 = perf_counter()
-    timings["input_data_processing"] = t1 - t0
+    # Steps 1-4 done; record the aggregate input-processing bucket.
+    timings["input_data_processing"] = perf_counter() - pipeline_start
 
     # Step 5: Run ONNX inference
     update_progress(4, 6, "Loading model and running inference...")
     t2 = perf_counter()
-    model = load_model(model_path)
+    model = load_model(model_path, backend=backend, gpu_id=gpu_id)
 
     session.logger.info(f"Running inference on {n_points} patches...")
 
     def inference_progress(current, total):
         update_progress(4, 6, f"Inference: {current}/{total} patches")
 
+    t0 = time.perf_counter()
     aa_probs, atom_probs, ss_probs = model.predict_batched(patches, batch_size=batch_size, progress_callback=inference_progress)
     t3 = perf_counter()
     timings["daq_computing"] = t3 - t2
@@ -721,9 +777,11 @@ def compute_daq_scores_pdb(
     map_input,
     structure,
     output_path: Optional[Union[str, Path]] = None,
-    batch_size: int = 512,
+    batch_size: int = 0,
     model_path: Optional[str] = None,
-    progress_callback: Optional[callable] = None,
+    progress_callback: Optional[Callable] = None,
+    gpu_id: int = 0,
+    backend: str = "auto",
 ) -> Tuple[np.ndarray, np.ndarray, Optional[Path], dict]:
     """
     Compute DAQ scores for PDB structure (heavy atom positions).
@@ -742,11 +800,16 @@ def compute_daq_scores_pdb(
     output_path : str or Path, optional
         Path to save output NPY file
     batch_size : int
-        Batch size for inference (default: 512)
+        Batch size for inference (0 = auto)
     model_path : str, optional
         Path to ONNX model (uses bundled model if None)
     progress_callback : callable, optional
         Progress callback function(current, total, message)
+    gpu_id : int
+        NVIDIA device id for tensorrt/cuda backends.
+    backend : str
+        Inference backend: "auto" (platform chain), "tensorrt", "cuda",
+        "directml", "mlx", "mlx-cpu", or "cpu". See onnx_model.load_model.
 
     Returns
     -------
@@ -754,6 +817,13 @@ def compute_daq_scores_pdb(
         (points, scores, actual_output_path) where scores is (N, 32) array
         and actual_output_path is the Path where the file was saved (or None if not saved)
     """
+    import time
+
+    timings = {
+        "input_data_processing": 0.0,
+        "daq_computing": 0.0,
+        "score_assignment": 0.0,
+    }
 
     def update_progress(current, total, msg=""):
         if progress_callback:
@@ -761,11 +831,8 @@ def compute_daq_scores_pdb(
         else:
             session.logger.status(f"{msg} ({current}/{total})")
 
-    timings = {
-        "input_data_processing": 0.0,
-        "daq_computing": 0.0,
-        "score_assignment": 0.0,
-    }
+    # Pipeline start covers steps 1-4 (resample + extract + patches).
+    pipeline_start = perf_counter()
 
     # Step 1: Unify and resample volume
     update_progress(0, 6, "Unifying and resampling volume...")
@@ -783,6 +850,7 @@ def compute_daq_scores_pdb(
 
     # Then resample
     vol = resize_map_to_1a(session, map_input_unified)
+    timings['1_resample'] = time.perf_counter() - t0
 
     # Check if a new volume was created (resampling happened)
     volumes_after = set(m for m in session.models.list() if isinstance(m, Volume))
@@ -790,6 +858,7 @@ def compute_daq_scores_pdb(
 
     # Step 2: Get volume data
     update_progress(1, 6, "Extracting volume data...")
+    t0 = time.perf_counter()
     data = vol.data.matrix().copy()  # (Z, Y, X) numpy array - copy to detach from volume
     origin = vol.data.origin  # (x, y, z)
     step = vol.data.step  # Should be ~(1, 1, 1) after resample
@@ -807,35 +876,44 @@ def compute_daq_scores_pdb(
 
     # Normalize volume
     data_norm = normalize_volume(data)
+    timings['2_volume_data'] = time.perf_counter() - t0
 
     # Step 3: Extract heavy atom coordinates from structure
     update_progress(2, 6, "Extracting heavy atom coordinates...")
+    t0 = time.perf_counter()
     points = get_heavy_atom_coords(structure)
+    timings['3_extract_coords'] = time.perf_counter() - t0
 
     n_points = points.shape[0]
     session.logger.info(f"Extracted {n_points} heavy atom coordinates from structure")
 
     if n_points == 0:
         session.logger.warning("No heavy atoms found in structure!")
-        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 32), dtype=np.float32), None
+        timings["input_data_processing"] = perf_counter() - pipeline_start
+        return (np.zeros((0, 3), dtype=np.float32),
+                np.zeros((0, 32), dtype=np.float32),
+                None, timings)
 
     # Step 4: Extract patches at heavy atom positions
     update_progress(3, 6, f"Extracting {n_points} patches...")
+    t0 = time.perf_counter()
     patches = extract_patches(data_norm, points, origin, step, patch_size=11)
+    timings['4_extract_patches'] = time.perf_counter() - t0
 
-    t1 = perf_counter()
-    timings["input_data_processing"] = t1 - t0
+    # Steps 1-4 done; record the aggregate input-processing bucket.
+    timings["input_data_processing"] = perf_counter() - pipeline_start
 
     # Step 5: Run ONNX inference
     update_progress(4, 6, "Loading model and running inference...")
     t2 = perf_counter()
-    model = load_model(model_path)
+    model = load_model(model_path, backend=backend, gpu_id=gpu_id)
 
     session.logger.info(f"Running inference on {n_points} patches...")
 
     def inference_progress(current, total):
         update_progress(4, 6, f"Inference: {current}/{total} patches")
 
+    t0 = time.perf_counter()
     aa_probs, atom_probs, ss_probs = model.predict_batched(patches, batch_size=batch_size, progress_callback=inference_progress)
     t3 = perf_counter()
     timings["daq_computing"] = t3 - t2

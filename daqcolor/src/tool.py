@@ -8,13 +8,16 @@ from Qt.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QDoubleSpinBox,
     QSpinBox, QPushButton, QCheckBox, QGroupBox, QFileDialog, QComboBox,
     QToolButton, QFrame, QSizePolicy, QMessageBox, QGridLayout, QTabWidget,
-    QTableView, QAbstractItemView, QHeaderView
+    QTableView, QAbstractItemView, QHeaderView, QStyle
 )
 
 from Qt.QtCore import Qt, QAbstractTableModel
 
 from Qt.QtGui import QDesktopServices
 from Qt.QtCore import QUrl, QTimer
+
+# Import cross-platform GPU detection from constants
+from .constants import PLATFORM, detect_nvidia_gpus
 
 from .cmd import _compute_residue_scores
 
@@ -189,6 +192,61 @@ class DAQTool(ToolInstance):
             self.structure_combo.setCurrentIndex(structure_index)
         if volume_index >= 0:
             self.volume_combo.setCurrentIndex(volume_index)
+
+    def _refresh_gpu_list(self):
+        """Populate GPU device combo with detected NVIDIA GPUs (Linux only).
+
+        Mac/Windows have no meaningful per-device picker for our backends
+        (MLX runs on the single integrated GPU; DirectML doesn't expose
+        device selection in our config path), so the combo is hidden
+        entirely on those platforms (see _build_ui).
+        """
+        if PLATFORM != 'linux':
+            return  # combo is hidden; nothing to refresh
+
+        current_id = self._selected_gpu_id()
+        self.gpu_combo.clear()
+
+        gpus = detect_nvidia_gpus()
+        if gpus:
+            for gpu in gpus:
+                self.gpu_combo.addItem(gpu['display_text'], gpu['id'])
+            # Restore previous selection if possible
+            for i in range(self.gpu_combo.count()):
+                if self.gpu_combo.itemData(i) == current_id:
+                    self.gpu_combo.setCurrentIndex(i)
+                    break
+        else:
+            self.gpu_combo.addItem("No NVIDIA GPU detected", -1)
+
+        # Sync enabled state with current backend (CPU/etc. don't use a GPU id).
+        if hasattr(self, "backend_combo"):
+            self._sync_device_combo_enabled()
+
+    def _backend_uses_gpu_id(self) -> bool:
+        """True if the currently selected backend honors gpu_id."""
+        if not hasattr(self, "backend_combo"):
+            return PLATFORM == 'linux'
+        val = self.backend_combo.currentData() or "auto"
+        # On Linux, auto/tensorrt/cuda all consult gpu_id. CPU does not.
+        # On other platforms gpu_id is meaningless.
+        return PLATFORM == 'linux' and val in ("auto", "tensorrt", "cuda")
+
+    def _sync_device_combo_enabled(self):
+        """Grey out the device combo when the backend doesn't use gpu_id."""
+        if PLATFORM != 'linux':
+            return
+        enabled = self._backend_uses_gpu_id()
+        self.gpu_combo.setEnabled(enabled)
+        if hasattr(self, "_gpu_refresh_btn"):
+            self._gpu_refresh_btn.setEnabled(enabled)
+
+    def _selected_gpu_id(self):
+        """Get the currently selected GPU ID from combo box."""
+        if not hasattr(self, "gpu_combo"):
+            return 0
+        gpu_id = self.gpu_combo.currentData()
+        return gpu_id if gpu_id is not None and gpu_id >= 0 else 0
 
     def _selected_structure(self):
         return self.structure_combo.currentData()
@@ -825,13 +883,83 @@ class DAQTool(ToolInstance):
         compute_layout.setVerticalSpacing(6)
 
         batch_label = QLabel("Batch size", root)
-        batch_label.setToolTip("Number of samples processed in each batch (affects memory usage and speed)")
+        batch_label.setToolTip(
+            "Number of samples per inference batch. 'Auto' picks the "
+            "EP-specific tuned default (TRT 2048, CUDA 1024, DML/CPU 256). "
+            "Use a numeric value only to override for benchmarking or to "
+            "avoid OOM on a small GPU.")
         compute_layout.addWidget(batch_label, 0, 0)
         self.bs_spin = QSpinBox(root)
-        self.bs_spin.setRange(1, 100000)
-        self.bs_spin.setValue(512)
-        self.bs_spin.setToolTip("Number of samples processed in each batch (affects memory usage and speed)")
+        self.bs_spin.setRange(0, 100000)
+        self.bs_spin.setSpecialValueText("Auto")  # shown when value == minimum (0)
+        self.bs_spin.setValue(0)
+        self.bs_spin.setToolTip(
+            "'Auto' = tuned default per backend. Type a number to override.")
         compute_layout.addWidget(self.bs_spin, 0, 1)
+
+        # Backend selector — single source of truth for the inference path.
+        # CPU is a backend value (not a separate checkbox), so disabling
+        # GPU = picking "CPU" from this combo. Forced values raise on
+        # unavailability; "Auto" follows the platform fallback chain.
+        backend_label = QLabel("Backend", root)
+        compute_layout.addWidget(backend_label, 1, 0)
+        self.backend_combo = QComboBox(root)
+        self.backend_combo.setToolTip(
+            "Inference backend. 'Auto' uses the platform fallback chain "
+            "(TRT > CUDA > CPU on Linux/NVIDIA; TRT > DirectML > CPU on "
+            "Windows; MLX Metal > MLX CPU > ORT CPU on macOS). Other "
+            "choices force a specific backend and skip fallbacks.")
+        # (display label, value passed to backend= kwarg)
+        backend_options = [("Auto", "auto")]
+        if PLATFORM == 'linux':
+            backend_options += [("TensorRT", "tensorrt"),
+                                ("CUDA", "cuda"), ("CPU", "cpu")]
+        elif PLATFORM == 'windows':
+            backend_options += [("TensorRT", "tensorrt"),
+                                ("DirectML", "directml"), ("CPU", "cpu")]
+        elif PLATFORM == 'darwin':
+            # MLX-CPU exposed on Mac: Apple Silicon Accelerate+AMX makes
+            # MLX CPU faster than ORT CPU EP. (Linux MLX-CPU is the
+            # opposite — slower — so it's omitted from that combo.)
+            backend_options += [("MLX (Metal)", "mlx"),
+                                ("MLX (CPU)", "mlx-cpu"),
+                                ("CPU", "cpu")]
+        else:
+            backend_options += [("CPU", "cpu")]
+        for label, value in backend_options:
+            self.backend_combo.addItem(label, value)
+        compute_layout.addWidget(self.backend_combo, 1, 1)
+
+        # GPU device picker — only meaningful on Linux/NVIDIA. Hidden on
+        # Mac (single Apple GPU) and Windows (DirectML device selection
+        # not surfaced through our backend).
+        if PLATFORM == 'linux':
+            gpu_row = QHBoxLayout()
+            gpu_row.setSpacing(6)
+            self.gpu_combo = QComboBox(root)
+            self.gpu_combo.setMinimumWidth(220)
+            self.gpu_combo.setToolTip(
+                "NVIDIA device for tensorrt/cuda backends. "
+                "Ignored when backend is CPU.")
+            gpu_row.addWidget(self.gpu_combo, 1)
+
+            btn_refresh_gpu = QPushButton(root)
+            btn_refresh_gpu.setIcon(root.style().standardIcon(QStyle.SP_BrowserReload))
+            btn_refresh_gpu.setFixedWidth(30)
+            btn_refresh_gpu.setToolTip("Refresh GPU list")
+            btn_refresh_gpu.clicked.connect(self._refresh_gpu_list)
+            gpu_row.addWidget(btn_refresh_gpu)
+            self._gpu_refresh_btn = btn_refresh_gpu
+            gpu_label = QLabel("GPU device", root)
+            compute_layout.addWidget(gpu_label, 2, 0)
+            compute_layout.addLayout(gpu_row, 2, 1)
+
+            # Populate GPU list at startup and wire enable-sync.
+            self._refresh_gpu_list()
+            self.backend_combo.currentIndexChanged.connect(
+                lambda _i: self._sync_device_combo_enabled())
+            self._sync_device_combo_enabled()
+
         params_layout.addWidget(compute_group)
 
         grid_group, grid_layout, _ = make_field_box("Grid Settings", card="dark", layout_cls=QGridLayout)
@@ -1335,6 +1463,12 @@ class DAQTool(ToolInstance):
         cmd += f" k {int(self.k_spin.value())}"
         cmd += f" half_window {int(self.hw_spin.value())}"
 
+        # Backend + (Linux-only) GPU device id.
+        backend = self.backend_combo.currentData() or "auto"
+        cmd += f" backend \"{backend}\""
+        if PLATFORM == 'linux' and self._backend_uses_gpu_id():
+            cmd += f" gpu_id {self._selected_gpu_id()}"
+
         metric = self._selected_metric()
         if metric:
             cmd += f" metric \"{metric}\""
@@ -1367,6 +1501,12 @@ class DAQTool(ToolInstance):
         cmd += f" k {int(self.k_spin.value())}"
         cmd += f" half_window {int(self.hw_spin.value())}"
 
+        # Backend + (Linux-only) GPU device id.
+        backend = self.backend_combo.currentData() or "auto"
+        cmd += f" backend \"{backend}\""
+        if PLATFORM == 'linux' and self._backend_uses_gpu_id():
+            cmd += f" gpu_id {self._selected_gpu_id()}"
+
         metric = self._selected_metric()
         if metric:
             cmd += f" metric \"{metric}\""
@@ -1375,12 +1515,7 @@ class DAQTool(ToolInstance):
         if outp:
             cmd += f" output \"{outp}\""
 
-        cmd += f" apply_color true"
-
-        #no save
-        #save_model = self.save_model_edit.text().strip()
-        #if save_model:
-        #    cmd += f" save_model \"{save_model}\""
+        cmd += " apply_color true"
 
         self.session.logger.info(f"Running: {cmd}")
         run(self.session, cmd)

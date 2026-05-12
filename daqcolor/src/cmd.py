@@ -169,7 +169,7 @@ def _window_average_scal(residues, scal, half_window=9):
     half_window: n-9 ~ n+9 def:9
 
     戻り値:
-      scal_win: (R,) 
+      scal_win: (R,)
     """
     R = len(residues)
     scal = np.asarray(scal, dtype=np.float32)
@@ -228,6 +228,7 @@ def _get_cached_npy_data(npy_path):
 
 def _compute_residue_scores(session, model, npy_path, k, metric, atom_name="CA",
                             radius=3.0, halfwindow=9, run_dssp=True,
+                            residues=None, q=None,
                             log_timing=False, timing_prefix="daqcolor",
                             knn_workers=1):
     if log_timing:
@@ -280,16 +281,18 @@ def _compute_residue_scores(session, model, npy_path, k, metric, atom_name="CA",
     pts, aa, atom, ss3 = cached["pts"], cached["aa"], cached["atom"], cached["ss3"]
     tree = cached["tree"]
 
-    residues = model.residues
+    if residues is None:
+        residues = model.residues
     if residues is None or len(residues) == 0:
         session.logger.warning("No residues in model.")
         return None
 
-    if log_timing:
-        t0 = time.perf_counter()
-    q = _residue_coords(residues, atom_name=atom_name, use_scene=True)
-    if log_timing:
-        mark("score: residue coordinates", t0)
+    if q is None:
+        if log_timing:
+            t0 = time.perf_counter()
+        q = _residue_coords(residues, atom_name=atom_name, use_scene=True)
+        if log_timing:
+            mark("score: residue coordinates", t0)
     valid_ca = np.isfinite(q[:, 0])
 
     if metric == "aa_score":
@@ -529,6 +532,8 @@ def _recolor(session, model, npy_path, k, cmap, metric, atom_name, clamp_min, cl
         radius=radius,
         halfwindow=halfwindow,
         run_dssp=True,
+        residues=residues,
+        q=q,
         log_timing=log_timing,
         timing_prefix="daqcolor",
         knn_workers=knn_workers,
@@ -845,9 +850,9 @@ from chimerax.map import MapArg
 
 
 def daqscore_compute_grid(session, map_input, contour, *, structure=None, output=None,
-                             stride=2, batch_size=512, max_points=500000, ckpt=None,
+                             stride=2, batch_size=0, max_points=500000, ckpt=None,
                              metric="aa_score", k=1, colormap=None, half_window=9,
-                             monitor=False):
+                             monitor=False, gpu_id=0, backend="auto"):
     """
     Compute DAQ scores from a cryo-EM map.
 
@@ -865,7 +870,7 @@ def daqscore_compute_grid(session, map_input, contour, *, structure=None, output
     stride : int
         Stride for point sampling (default: 2)
     batch_size : int
-        Batch size for inference (default: 512)
+        Batch size for inference (0 = auto)
     max_points : int
         Maximum number of points (default: 500000)
     ckpt : str, optional
@@ -880,10 +885,21 @@ def daqscore_compute_grid(session, map_input, contour, *, structure=None, output
         Half window size for score smoothing (default: 9)
     monitor : bool
         If True and structure is specified, start live monitoring (default: False)
+    gpu_id : int
+        NVIDIA device id for tensorrt/cuda backends (default: 0)
+    backend : str
+        Inference backend: "auto" (platform chain), "tensorrt", "cuda",
+        "directml", "mlx", "mlx-cpu", or "cpu" (default: "auto").
     """
     from pathlib import Path
     from chimerax.map import Volume
-    
+
+    # CUDA library preload is owned by DAQOnnxModel.__init__ (called from
+    # load_model) and only fires for tensorrt/cuda backends. No need to
+    # call it here -- the guard in _preload_cuda_libraries makes it
+    # idempotent but having two call sites for the same side effect is
+    # bit-rot bait.
+
     # Check for onnxruntime
     try:
         import onnxruntime
@@ -893,7 +909,6 @@ def daqscore_compute_grid(session, map_input, contour, *, structure=None, output
             "  pip install onnxruntime"
         )
         return
-    
     from .compute import compute_daq_scores, normalize_npy_output_path
     
     # Determine if input is a Volume model or file path
@@ -937,6 +952,8 @@ def daqscore_compute_grid(session, map_input, contour, *, structure=None, output
             batch_size=batch_size,
             max_points=max_points,
             model_path=ckpt,
+            gpu_id=gpu_id,
+            backend=backend,
         )
 
         # Use the actual output path (may differ from requested if fallback was used)
@@ -980,6 +997,8 @@ daqscore_compute_grid_desc = CmdDesc(
         ("colormap", ColormapArg),
         ("half_window", IntArg),
         ("monitor", BoolArg),
+        ("gpu_id", IntArg),
+        ("backend", StringArg),
     ],
     synopsis="Compute DAQ scores from a cryo-EM map (file path or loaded volume #id)"
 )
@@ -992,9 +1011,9 @@ daqscore_compute_grid_desc = CmdDesc(
 # ===========================================================================
 
 def daqscore_compute_pdb(session, map_input, *, structure=None, output=None,
-                         batch_size=512, ckpt=None, metric="aa_score",
+                         batch_size=0, ckpt=None, metric="aa_score",
                          k=1, colormap=None, half_window=9, apply_color=True,
-                         save_model=None):
+                         save_model=None, gpu_id=0, backend="auto"):
     """
     Compute DAQ scores using heavy atom positions from a PDB structure.
 
@@ -1012,7 +1031,7 @@ def daqscore_compute_pdb(session, map_input, *, structure=None, output=None,
     output : str, optional
         Path to save output NPY file (auto-generated if not specified)
     batch_size : int
-        Batch size for inference (default: 512)
+        Batch size for inference (0 = auto)
     ckpt : str, optional
         Path to ONNX checkpoint/model file (uses bundled model if not specified)
     metric : str
@@ -1026,8 +1045,13 @@ def daqscore_compute_pdb(session, map_input, *, structure=None, output=None,
     apply_color : bool
         If True, apply coloring to structure after computation (default: True)
     save_model : str, optional
-        Path to save the scored structure model (PDB or CIF format). 
+        Path to save the scored structure model (PDB or CIF format).
         Scores are written to B-factor field. If not specified, model is not saved.
+    gpu_id : int
+        NVIDIA device id for tensorrt/cuda backends (default: 0)
+    backend : str
+        Inference backend: "auto" (platform chain), "tensorrt", "cuda",
+        "directml", "mlx", "mlx-cpu", or "cpu" (default: "auto").
     """
     from pathlib import Path
     from chimerax.map import Volume
@@ -1036,6 +1060,10 @@ def daqscore_compute_pdb(session, map_input, *, structure=None, output=None,
     if structure is None:
         session.logger.error("structure argument is required")
         return
+
+    # Preload CUDA libraries before importing onnxruntime
+    from .onnx_model import _preload_cuda_libraries
+    _preload_cuda_libraries()
 
     # Check for onnxruntime
     try:
@@ -1084,6 +1112,8 @@ def daqscore_compute_pdb(session, map_input, *, structure=None, output=None,
             output_path=output,
             batch_size=batch_size,
             model_path=ckpt,
+            gpu_id=gpu_id,
+            backend=backend,
         )
 
         # Use the actual output path (may differ from requested if fallback was used)
@@ -1138,6 +1168,8 @@ daqscore_compute_pdb_desc = CmdDesc(
         ("half_window", IntArg),
         ("apply_color", BoolArg),
         ("save_model", SaveFileNameArg),
+        ("gpu_id", IntArg),
+        ("backend", StringArg),
     ],
     required_arguments=["structure"],
     synopsis="Compute DAQ scores at heavy atom positions from a PDB structure"

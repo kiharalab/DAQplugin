@@ -1,0 +1,129 @@
+[build-system]
+requires = ["setuptools", "ChimeraX-BundleBuilder"]
+build-backend = "chimerax.bundle_builder.cx_pep517"
+
+[project]
+# ChimeraX bundle names must start with "ChimeraX-"
+# to avoid clashes with package names in pypi.python.org.
+# When uploaded to the ChimeraX toolshed, the bundle
+# will be displayed without the ChimeraX- prefix.
+name = "ChimeraX-DAQplugin"
+version = "1.0.0"
+license = "GPL-3.0-only"
+authors = [{name = "Genki Terashi", email = "gterashi@purdue.edu"}]
+description = "DAQ Score computation and visualization for cryo-EM models"
+dynamic = ["classifiers", "requires-python"]
+# Core dependencies - cross-platform compatible
+# NOTE: Use 'onnxruntime' (base version) for cross-platform support.
+# ONNX Runtime auto-detects GPU (CUDA/DirectML/CoreML) at runtime.
+# For NVIDIA GPU support on Linux, use onnxruntime-gpu instead.
+# For Windows GPU support, use onnxruntime-directml instead.
+dependencies = [
+    "ChimeraX-Core ~=1.1",
+    "ChimeraX-UI ~=1.0",
+    "ChimeraX-Map ~=1.0",
+    "ChimeraX-Markers ~=1.0",
+    "numpy >=1.20.0",
+    "scipy >=1.7.0",
+    "mrcfile >=1.4.0",
+    "numba >=0.52.0",
+    "onnxruntime >=1.16.0",
+]
+
+# Optional dependencies for GPU support
+# NOTE: Only ONE onnxruntime variant can be installed at a time!
+# Install GPU support with: pip install onnxruntime-gpu  (Linux/NVIDIA)
+# Or: pip install onnxruntime-directml  (Windows)
+
+[project.readme]
+content-type = "text/markdown"
+text = """DAQ-Score: Deep-learning-based residue-wise Quality Assessment for cryo-EM models.
+
+DAQplugin provides DAQ score computation and visualization for protein atomic models in cryo-EM maps.
+
+This ChimeraX plugin enables:
+- Interactive coloring of residues based on DAQ scores
+- Live monitoring and recoloring during model manipulation
+- Visualization of DAQ score points as markers
+- Computation of DAQ scores from cryo-EM maps (grid-based and PDB-based)
+
+For more information, see: https://github.com/gterashi/DAQplugin
+"""
+
+[project.urls]
+Home = "https://github.com/gterashi/DAQplugin"
+
+[project.entry-points."chimerax.bundle"]
+daqcolor = "chimerax.daqcolor"
+
+[chimerax]
+# Set this value to a string to give your module name a
+# different installed name than the project name.
+module-name-override = "daqcolor"
+pure = true
+# Required so ChimeraX calls bundle_api.initialize() / finish() — needed
+# to register the 'app quit' handler that releases ORT/MLX sessions
+# before Python interpreter teardown (otherwise the process hangs after
+# GUI close on Linux/CUDA).
+custom-init = true
+# Use old keys: ChimeraX 1.10 BundleBuilder requires min-session-version /
+# max-session-version. The 1.12+ variant is min-session-ver / max-session-ver.
+# Bump when dropping 1.10 support.
+min-session-version = 1
+max-session-version = 1
+categories = ["General", "Volume Data"]
+classifiers = [
+    "Framework :: ChimeraX",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Environment :: MacOS X :: Aqua",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: X11 Applications",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: Microsoft :: Windows :: Windows 10",
+    "Operating System :: POSIX :: Linux",
+]
+# Commands and tools are defined in [chimerax.command.*] and [chimerax.tool.*] sections below
+# which auto-generate the required classifiers
+
+[chimerax.package-data]
+"src/data" = ["*.npz"]
+
+[chimerax.command."daqcolor apply"]
+category = "General"
+description = "Color residues from a numpy DAQ score file"
+
+[chimerax.command."daqcolor monitor"]
+category = "General"
+description = "Start/stop live recoloring"
+
+[chimerax.command."daqcolor points"]
+category = "General"
+description = "Show DAQ score points as markers"
+
+[chimerax.command."daqcolor clear"]
+category = "General"
+description = "Close marker models"
+
+[chimerax.command."daqscore compute_grid"]
+category = "Volume Data"
+description = "Compute DAQ scores from a cryo-EM map using contour threshold"
+
+[chimerax.command."daqscore compute_pdb"]
+category = "Volume Data"
+description = "Compute DAQ scores at heavy atom positions from a PDB structure"
+
+[chimerax.command."daq arrowwin"]
+category = "Validation"
+description = "DAQ arrow window: per-residue arrow visualization (selection or model mode)"
+
+[chimerax.command."daq clearrestraints"]
+category = "Validation"
+description = "Clear ISOLDE position restraints created by daq arrowwin"
+
+[chimerax.tool."DAQplugin"]
+category = "Validation"
+description = "DAQ score computation and residue-wise visualization"

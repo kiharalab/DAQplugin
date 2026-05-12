@@ -4,47 +4,192 @@ DAQplugin is a collection of tools for computing, visualizing, and exporting **D
 
 This repository provides:
 
-- Google Colab ready Jupyter notebooks for DAQ score computation and NPY file generation [DAQ_Score_Grid.ipynb](https://colab.research.google.com/github/gterashi/DAQplugin/blob/main/DAQ_Score_Grid.ipynb)
+- Google Colab ready Jupyter notebooks for DAQ score computation and NPY file generation ([DAQ_Score_Grid.ipynb](https://colab.research.google.com/github/gterashi/DAQplugin/blob/main/DAQ_Score_Grid.ipynb))
 - A ChimeraX plugin (`daqcolor`) for interactive coloring and visualization
 - Command-line utilities for processing and file export
 
 DAQ is included as a Git submodule to ensure consistency with published methods.
 
 If you use DAQplugin, please cite the following paper:
-- Terashi, G., Wang, X., Maddhuri Venkata Subramaniya, S. R., Tesmer, J. J., & Kihara, D. (2022). Residue-wise local quality estimation for protein models from cryo-EM maps. Nature methods, 19(9), 1116-1125. [Link](https://www.nature.com/articles/s41592-022-01574-4)
 
----
-## DAQ score monitoring (7jsn version 1.1 and EMD-22458)
-<img src="img/demo.gif" width="600">
+- Terashi, G., Wang, X., Maddhuri Venkata Subramaniya, S. R., Tesmer, J. J., & Kihara, D. (2022). Residue-wise local quality estimation for protein models from cryo-EM maps. Nature methods, 19(9), 1116-1125. ([Nature Methods article](https://www.nature.com/articles/s41592-022-01574-4))
 
 ---
 
-## Repository Structure
+## Table of Contents
 
-```
+- [Quick Start](#quick-start)
+- [Installation](#installation-on-chimerax-toolshed)
+- [GPU Acceleration and Backends](#gpu-acceleration-and-backends)
+- [Installation from Prebuilt Wheels](#installation-from-prebuilt-wheels)
+- [Building Platform Wheels](#building-platform-wheels)
+- [1. DAQ Score Computation (Jupyter Notebooks)](#1-daq-score-and-npy-file-computation-jupyter-notebook-on-google-colab)
+  - [Grid-based Notebook](#notebook)
+  - [PDB-based Notebook](#daq-score-pdb-notebook)
+- [2. ChimeraX Plugin: daqcolor](#2-chimerax-plugin-daqcolor)
+  - [Installation](#installation-developer-mode)
+  - [Commands](#commands)
+    - [Apply DAQ coloring](#apply-daq-coloring-once)
+    - [Live Monitoring](#live-monitoring)
+    - [Visualize point clouds](#visualize-point-clouds)
+  - [DAQ Score Computation](#daq-score-computation-chimerax)
+    - [Grid-based computation](#compute-daq-scores-from-a-map-grid-based)
+    - [PDB-based computation](#compute-daq-scores-from-a-map-pdb-based)
+  - [Saving Colored Models](#saving-colored-models)
+- [3. Command-Line Usage (CLI)](#3-command-line-usage-cli)
+- [Notes](#notes)
+- [License](#license)
+
+---
+
+## Quick Start
+
+![DAQ score monitoring demo](img/demo.gif)
+
+<details>
+<summary><b>Repository Structure</b></summary>
+
+```text
 DAQplugin/
-├── DAQ/                  # DAQ core (git submodule)
-├── daqcolor/             # ChimeraX plugin
-│   ├── src/
-│   ├── bundle_info.xml
-│   ├── cmd.py            # commands for ChimeraX
-│   ├── compute.py        # DAQ for ChimeraX
-│   ├── onnx_model.py     # DL for ChimeraX
-│   └── 00README.txt
-├── cli/                  # Command-line scripts
-├── map_util/             # Map preprocessing utilities
-├── DAQ_Score.ipynb       # Original DAQ score calculation notebook
-├── DAQ_Score_Grid.ipynb  # Grid / NPY generation notebook
-├── DAQ_Score_Pdb.ipynb   # PDB coordinate based DAQ score calculation notebook
+├── DAQ/                       # DAQ core (git submodule)
+├── daqcolor/                  # ChimeraX plugin
+│   ├── src/                   # plugin source (commands, compute, ONNX/MLX backends, GUI)
+│   ├── pyproject.toml         # bundle metadata + platform-aware dependency lists
+│   ├── build_wheels.py        # produces platform-tagged wheels for distribution
+│   ├── wheels/                # output of build_wheels.py (generated)
+│   └── LICENSE
+├── cli/                       # Command-line scripts
+├── map_util/                  # Map preprocessing utilities
+├── tools/                     # Conversion + parity-test utilities (MLX, profiling)
+├── DAQ_Score.ipynb            # Original DAQ score calculation notebook
+├── DAQ_Score_Grid.ipynb       # Grid / NPY generation notebook
+├── DAQ_Score_Pdb.ipynb        # PDB coordinate based DAQ score calculation notebook
 ├── README.md
 └── LICENSE
 ```
 
+</details>
+
 ---
+
 ## Installation on ChimeraX Toolshed
 - In the Menu bar: Tools > More Tools > DAQplugin page > Click [Download]
+- ChimeraX picks the right wheel for your platform automatically (Linux/NVIDIA, Windows, macOS Apple Silicon, macOS Intel, or generic CPU).
+
 ### Start GUI
 - Tools > Validation > DAQplugin
+
+---
+
+## GPU Acceleration and Backends
+
+DAQplugin runs inference through one of several backends. The plugin auto-selects the best one for your platform on first use; you can also force a specific backend from the GUI **Backend** dropdown or via the `backend` command parameter.
+
+| Platform | Backends (auto fallback chain)                    | Notes |
+|----------|----------------------------------------------------|-------|
+| Linux (NVIDIA)  | TensorRT → CUDA → CPU                       | TRT engines cached at `~/.chimerax/daq_model/trt_cache/` (first build ~10 s, cached ~0.5 s). Multi-GPU: pick device with `gpu_id N`. |
+| Windows  | TensorRT → DirectML → CPU                          | DirectML supports any GPU vendor (NVIDIA/AMD/Intel). TensorRT requires a separately installed NVIDIA toolkit. |
+| macOS (Apple Silicon) | MLX-Metal → MLX-CPU → ORT-CPU         | MLX uses the unified GPU and Accelerate/AMX coprocessor. |
+| macOS (Intel)         | ORT-CPU                                   | No MLX wheel exists for x86_64 Mac. |
+| Any (CPU fallback)    | ORT-CPU                                   | Used when no GPU backend is available. |
+
+**Choosing a backend manually** (CLI):
+
+```bash
+# Force CPU even if a GPU is available
+daqscore compute_grid #1 0.5 backend cpu
+
+# Force TensorRT on a multi-GPU Linux box, use device 1
+daqscore compute_grid #1 0.5 backend tensorrt gpu_id 1
+```
+
+**Throughput (RTX 6000 Ada, 11³ patches/s)**:
+
+| Backend     | Peak     | Notes                                    |
+|-------------|----------|------------------------------------------|
+| TensorRT    | ~817K p/s | Best on NVIDIA; engine cached after first run. |
+| CUDA EP     | ~308K p/s | Falls back to TRT-cached layouts when available. |
+| DirectML    | ~30K p/s  | Cross-vendor GPU on Windows.             |
+| MLX Metal   | varies    | Apple Silicon. Beats ORT-CPU significantly. |
+| ORT-CPU     | ~2K p/s   | Reliable fallback everywhere.            |
+
+The plugin auto-selects an inference batch size per backend (TRT 2048, CUDA 1024, DirectML/CPU 256). Override with `batch_size N` in the GUI or CLI, or set `DAQ_BATCH_OVERRIDE=<n>` to globally override for benchmarking.
+
+---
+
+## Installation from Prebuilt Wheels
+
+If you have a wheel (`.whl`) file directly (e.g. from a GitHub Release), install it inside ChimeraX:
+
+```bash
+toolshed install /path/to/chimerax_daqplugin-X.Y.Z-py3-none-<platform>.whl
+```
+
+The bundle ships as **four** platform-tagged wheels per release:
+
+| Wheel tag | Target |
+|-----------|--------|
+| `py3-none-linux_x86_64`         | Linux 64-bit (bundles CUDA + cuDNN + TensorRT — ~1.5 GB) |
+| `py3-none-win_amd64`            | Windows 64-bit (DirectML) |
+| `py3-none-macosx_11_0_universal2` | macOS 11.0+ (one wheel covers both Apple Silicon and Intel; `mlx` is gated by a PEP 508 environment marker) |
+| `py3-none-any`                  | Generic CPU fallback (any platform without a GPU path) |
+
+Pip / `toolshed install` picks the most specific match for your host. Reinstall the appropriate wheel after upgrading.
+
+---
+
+## Building Platform Wheels
+
+The build script `daqcolor/build_wheels.py` produces all platform wheels from a single source tree.
+
+### Prerequisites
+
+- A ChimeraX install (the build uses ChimeraX's bundled Python, which ships `ChimeraX-BundleBuilder`; the bundle builder is **not** on PyPI).
+- The `wheel` package (already in ChimeraX's Python).
+
+### Build all wheels
+
+From the repository root:
+
+```bash
+cd daqcolor
+python build_wheels.py
+```
+
+This produces 4 wheels under `daqcolor/wheels/`:
+
+```
+chimerax_daqplugin-X.Y.Z-py3-none-linux_x86_64.whl
+chimerax_daqplugin-X.Y.Z-py3-none-win_amd64.whl
+chimerax_daqplugin-X.Y.Z-py3-none-macosx_11_0_universal2.whl
+chimerax_daqplugin-X.Y.Z-py3-none-any.whl
+```
+
+### Build a specific platform
+
+```bash
+python build_wheels.py --platforms linux-bundled-cuda
+python build_wheels.py --platforms linux-bundled-cuda,win,mac,cpu  # default set
+python build_wheels.py --platforms all                              # adds linux-system-cuda
+```
+
+### How the build works
+
+1. `pyproject.toml` is patched in-place per platform to inject the platform-specific dependency list defined in `build_wheels.py:PLATFORM_DEPS`.
+2. ChimeraX's bundled `python -m build` produces a pure-Python `py3-none-any` wheel.
+3. The wheel is post-processed with `python -m wheel tags` to apply the correct PEP 425 platform tag (e.g. `linux_x86_64`).
+4. Output is moved to `daqcolor/wheels/`. Original `pyproject.toml` is restored when done.
+
+### Override ChimeraX detection
+
+```bash
+python build_wheels.py --chimerax /path/to/chimerax-executable
+python build_wheels.py --out /custom/output/dir
+```
+
+### Submit to ChimeraX Toolshed
+
+Wheels are standard Python wheels. Sign in at <https://cxtoolshed.rbvi.ucsf.edu/> (Google OAuth required), use **Submit a Bundle**, and upload each platform wheel separately. The first submission per bundle requires manual approval by ChimeraX staff; subsequent uploads auto-publish.
 
 ## Use GUI
 <img src="img/gui1.png" width="300">
@@ -63,8 +208,9 @@ DAQplugin/
 - Load Existing NPY : Load an existing .npy file for coloring and monitoring only.
 
 ### 2. Compute Options
-- batch_size: 
-Controls how many grid points are processed per batch during grid-based DAQ computation. Larger values → faster computation but higher memory usage `Default: 512`
+- **Batch size**: How many grid points are processed per inference batch. Larger values = faster but more memory. **Default: Auto** — picks the tuned default for the active backend (TensorRT 2048, CUDA 1024, DirectML/CPU 256). Set a numeric value to override (or to avoid OOM on a small GPU).
+- **Backend**: Inference path. **Auto** follows the per-platform fallback chain (see [GPU Acceleration and Backends](#gpu-acceleration-and-backends)). Other choices force a specific backend.
+- **GPU device** (Linux only): When multiple NVIDIA GPUs are present, pick which device to use for TensorRT/CUDA.
 
 ### 3. Grid-based DAQ Score Computation
 This mode computes DAQ scores by scanning the EM map on a grid.
@@ -187,20 +333,21 @@ The generated `.npy` files are used by the ChimeraX plugin (`daqcolor`) for visu
 3. Output:
    - `points_AA_ATOM_SS_swap.npy`
    - Optional: PDB file with DAQ score
+
 ---
-### Notebook
+
+### DAQ Score PDB Notebook
 
 - [`DAQ_Score_Pdb.ipynb`](https://colab.research.google.com/github/gterashi/DAQplugin/blob/main/DAQ_Score_Pdb.ipynb)
 
-### Purpose
+#### PDB Notebook Purpose
 
 This notebook computes:
 
 - DAQ scores from atomic models (PDB/CIF) and cryo-EM maps (MRC/MAP)
 - DAQ scores per residue are recorded in the atomic models.
 
-
-### Typical Workflow
+#### PDB Notebook Workflow
 
 1. Provide:
    - Atomic model (`.pdb` or `.cif`)
@@ -244,23 +391,28 @@ help daqcolor
 
 #### Apply DAQ coloring once
 
-```
+<details>
+<summary><b>Show command syntax and parameters</b></summary>
+
+```text
 daqcolor apply npyPath model [k N] [half_window N] [colormap] [metric] [atom_name CA] [clamp_min clampMin] [clamp_max clampMax]
 ```
 
-- `npyPath` : Path to the numpy file computed by NoteBook (positional argument).  
-- `model`   : ChimeraX model ID (e.g., `#1`)  
+**Parameters:**
+
+- `npyPath` : Path to the numpy file computed by NoteBook (positional argument).
+- `model`   : ChimeraX model ID (e.g., `#1`)
 - `k` : Number of nearest neighbors for kNN (default: 1)
 - `half_window` : Window averaging half-width (n±half_window, default: 9)
 - `colormap` : Optional colormap for visualization
 - `metric`  :
-  - `aa_score` — DAQ(AA) score  
-  - `atom_score` — DAQ(CA) score  
-  - `aa_conf:<AA>` — DAQ confidence for a specific amino-acid type  
-- `atom_name` : Atom name (default: CA)  
-- `clamp_min`, `clamp_max` : Optional score clamping  
+  - `aa_score` — DAQ(AA) score
+  - `atom_score` — DAQ(CA) score
+  - `aa_conf:<AA>` — DAQ confidence for a specific amino-acid type
+- `atom_name` : Atom name (default: CA)
+- `clamp_min`, `clamp_max` : Optional score clamping
 
-**Examples**
+**Examples:**
 
 ```bash
 # Color model #2 by amino-acid DAQ score
@@ -270,16 +422,23 @@ daqcolor apply ./points_AA_ATOM_SS_swap.npy #2 metric aa_score
 daqcolor apply ./points_AA_ATOM_SS_swap.npy #1 metric atom_score
 ```
 
+</details>
+
 ---
 
 #### Live Monitoring
-- **daqcolor monitor** command shows DAQ score based on the current Atom coordinates.
 
-```
+The **daqcolor monitor** command shows DAQ score based on the current Atom coordinates.
+
+<details>
+<summary><b>Show command syntax, parameters, and examples</b></summary>
+
+```text
 daqcolor monitor model [npy_path npyPath] [k N] [half_window N] [colormap] [metric] [atom_name CA] [on true|false] [interval N]
 ```
 
 **Parameters:**
+
 - `model` : ChimeraX model ID (e.g., `#1`) - **required**
 - `npy_path` : Path to the numpy file - **required when turning monitor on, not needed when turning off**
 - `k` : Number of nearest neighbors for kNN (default: 1)
@@ -304,37 +463,48 @@ daqcolor monitor #2 on false
 ```
 
 **Notes:**
+
 - If you run `daqcolor monitor` on the same model multiple times, it will automatically replace the previous monitor
 - To stop monitoring, use `on false` without specifying the npy_path
 - The `interval` parameter controls how frequently the coloring is updated (throttling)
-### Example: EMD-22456 and mis-aligned model
 
-- **Mis-aligned model**  
-  Red indicates negative DAQ scores.  
+</details>
+
+#### Example: EMD-22456 and mis-aligned model
+
+- **Mis-aligned model**
+
+  Red indicates negative DAQ scores.
   Green regions are located outside the contour level.
 
-  <img src="img/example2.png" width="400">
+  ![Mis-aligned model example](img/example2.png)
 
 - **Aligned model using the `FitMap` command in ChimeraX**
- Blue indicates positive DAQ scores.
- 
-  <img src="img/example1.png" width="400">
 
-- **PDB 7JSN (version 1)**  
-  DAQ detects modeling errors in this version 1.1 deposited model.  
+  Blue indicates positive DAQ scores.
+
+  ![Aligned model example](img/example1.png)
+
+- **PDB 7JSN (version 1)**
+
+  DAQ detects modeling errors in this version 1.1 deposited model.
   [RCSB PDB entry](https://www.rcsb.org/versions/7JSN)
 
-  <img src="img/example3.png" width="400">
+  ![PDB 7JSN example](img/example3.png)
 
 ---
 
 #### Visualize point clouds
 
-```
+<details>
+<summary><b>Show command syntax, parameters, and examples</b></summary>
+
+```text
 daqcolor points npyPath [radius] [metric] [colormap] [clamp_min clampMin] [clamp_max clampMax]
 ```
 
 **Parameters:**
+
 - `npyPath` : Path to the numpy file (positional argument)
 - `radius` : Marker radius (default: 0.4)
 - `metric` : Optional metric for coloring:
@@ -356,7 +526,9 @@ daqcolor points ./points_AA_ATOM_SS_swap.npy radius 0.6 metric aa_conf
 daqcolor points ./points_AA_ATOM_SS_swap.npy radius 0.6 metric aa_top:ALA
 ```
 
-### Clear markers:
+</details>
+
+#### Clear markers
 
 ```bash
 daqcolor clear
@@ -368,24 +540,25 @@ daqcolor clear
 
 The `daqscore` commands allow you to compute DAQ scores directly within ChimeraX using ONNX Runtime inference.
 
-> **Recommendation**  
-> For large maps or if you have a weak CPU, consider using the [Google Colab notebook](https://colab.research.google.com/github/gterashi/DAQplugin/blob/main/DAQ_Score_Grid.ipynb) instead, which provides free GPU acceleration and can handle larger datasets more efficiently.
+> **Note**
+> The plugin auto-selects the best available GPU backend for your platform (TensorRT/CUDA on Linux/NVIDIA, DirectML on Windows, MLX on Apple Silicon) and falls back to CPU when no GPU path is available. See [GPU Acceleration and Backends](#gpu-acceleration-and-backends) for details. For very large maps that exceed available GPU memory, consider the [Google Colab notebook](https://colab.research.google.com/github/gterashi/DAQplugin/blob/main/DAQ_Score_Grid.ipynb) for free hosted GPU access.
 
 #### Compute DAQ scores from a map (grid-based)
 
-> **Note**  
-> For large maps or if you have a weak CPU, consider using the [Colab version](https://colab.research.google.com/github/gterashi/DAQplugin/blob/main/DAQ_Score_Grid.ipynb) instead, which provides better performance with GPU acceleration.
+<details>
+<summary><b>Show command syntax, parameters, and examples</b></summary>
 
 ```bash
-daqscore compute_grid mapInput contour [output npyPath] [stride N] [batch_size N] [max_points N] [ckpt ckptPath] [structure #model] [monitor true|false] [metric] [k N] [colormap] [half_window N]
+daqscore compute_grid mapInput contour [output npyPath] [stride N] [batch_size N] [max_points N] [ckpt ckptPath] [structure #model] [monitor true|false] [metric] [k N] [colormap] [half_window N] [backend name] [gpu_id N]
 ```
 
 **Parameters:**
+
 - `mapInput`: Path to MRC/MAP file OR ChimeraX Volume model (e.g., `#1`) - **required** (positional)
 - `contour`: Contour threshold value - **required** (positional)
 - `output`: Path to save output NPY file (auto-generated if not specified)
 - `stride`: Stride for point sampling (default: 2, higher=faster but less dense)
-- `batch_size`: Batch size for inference (default: 512)
+- `batch_size`: Batch size for inference (default: `0` = Auto — picks the tuned default per backend: TRT 2048, CUDA 1024, DirectML/CPU 256). Override to avoid OOM on small GPUs or for benchmarking.
 - `max_points`: Maximum number of points to sample (default: 500000)
 - `ckpt`: Optional path to ONNX checkpoint/model file (uses bundled model if not specified)
 - `structure`: Optional structure model to apply coloring after computation
@@ -394,10 +567,12 @@ daqscore compute_grid mapInput contour [output npyPath] [stride N] [batch_size N
 - `k`: Number of nearest neighbors for kNN (default: 1)
 - `colormap`: Optional colormap for visualization
 - `half_window`: Half window size for score smoothing (default: 9)
+- `backend`: Inference backend: `auto` (default), `tensorrt`, `cuda`, `directml`, `mlx`, `mlx-cpu`, `cpu`. `auto` follows the per-platform fallback chain (see [GPU Acceleration and Backends](#gpu-acceleration-and-backends)).
+- `gpu_id`: NVIDIA device ID for `tensorrt`/`cuda` backends on multi-GPU Linux hosts (default: 0). Ignored by other backends.
 
 **Examples:**
 
-```
+```bash
 # Compute from a file path
 daqscore compute_grid /path/to/map.mrc 0.5 output /path/to/output.npy
 
@@ -410,9 +585,18 @@ daqscore compute_grid #1 0.5 structure #2 metric aa_score
 # Compute, apply coloring, and start monitoring
 daqscore compute_grid #1 0.5 structure #2 monitor true metric aa_score half_window 9
 
+# Use specific GPU (for multi-GPU Linux systems)
+daqscore compute_grid #1 0.5 structure #2 gpu_id 1
+
+# Force a specific backend (skip auto fallback chain)
+daqscore compute_grid #1 0.5 backend cuda
+daqscore compute_grid #1 0.5 backend cpu        # CPU even with GPU available
+
 # Stop monitoring of #1
 daqcolor monitor #1 on false
 ```
+
+</details>
 
 ---
 
@@ -420,15 +604,19 @@ daqcolor monitor #1 on false
 
 This command computes DAQ scores using heavy atom positions from a PDB structure as query points, instead of grid points from the map. Reference distributions are computed from atoms with density >= 0.
 
+<details>
+<summary><b>Show command syntax, parameters, and examples</b></summary>
+
 ```bash
-daqscore compute_pdb mapInput structure #model [output npyPath] [batch_size N] [ckpt ckptPath] [metric] [k N] [colormap] [half_window N] [apply_color true|false] [save_model modelPath]
+daqscore compute_pdb mapInput structure #model [output npyPath] [batch_size N] [ckpt ckptPath] [metric] [k N] [colormap] [half_window N] [apply_color true|false] [save_model modelPath] [backend name] [gpu_id N]
 ```
 
 **Parameters:**
+
 - `mapInput`: Path to MRC/MAP file OR ChimeraX Volume model (e.g., `#1`) - **required** (positional)
 - `structure`: Structure model whose heavy atom coordinates will be used - **required** (keyword)
 - `output`: Path to save output NPY file (auto-generated if not specified)
-- `batch_size`: Batch size for inference (default: 512)
+- `batch_size`: Batch size for inference (default: `0` = Auto — picks the tuned default per backend). Override to avoid OOM on small GPUs.
 - `ckpt`: Optional path to ONNX checkpoint/model file (uses bundled model if not specified)
 - `metric`: Coloring metric (`aa_score`, `atom_score`, or `aa_conf:<AA>`, default: `aa_score`)
 - `k`: Number of nearest neighbors for kNN (default: 1)
@@ -436,6 +624,8 @@ daqscore compute_pdb mapInput structure #model [output npyPath] [batch_size N] [
 - `half_window`: Half window size for score smoothing (default: 9)
 - `apply_color`: If `true`, apply coloring to structure after computation (default: `true`)
 - `save_model`: Optional path to save the scored structure model (PDB or CIF format). Scores are written to B-factor field.
+- `backend`: Inference backend: `auto` (default), `tensorrt`, `cuda`, `directml`, `mlx`, `mlx-cpu`, `cpu`. See [GPU Acceleration and Backends](#gpu-acceleration-and-backends).
+- `gpu_id`: NVIDIA device ID for `tensorrt`/`cuda` backends on multi-GPU Linux hosts (default: 0).
 
 **Examples:**
 
@@ -451,7 +641,15 @@ daqscore compute_pdb #1 structure #2 metric aa_score save_model scored_model.pdb
 
 # With custom parameters
 daqscore compute_pdb #1 structure #2 metric atom_score k 1 half_window 9 save_model output.cif
+
+# Use specific GPU (for multi-GPU Linux systems)
+daqscore compute_pdb #1 structure #2 metric aa_score gpu_id 1
+
+# Force CPU backend
+daqscore compute_pdb #1 structure #2 backend cpu
 ```
+
+</details>
 
 ---
 
@@ -459,7 +657,8 @@ daqscore compute_pdb #1 structure #2 metric atom_score k 1 half_window 9 save_mo
 
 Once colored, models can be exported using ChimeraX:
 
-Save #1 as colored.pdb
+Save #1 as colored.pdb:
+
 ```bash
 save colored.pdb #1
 ```
@@ -471,23 +670,27 @@ save colored.pdb #1
 ---
 
 ## 3. Command-Line Usage (CLI)
+
 ### DAQ Score Export to B-factor (CLI)
 
 The script **daq_write_bfactor.py** writes DAQ-style scores into the B-factor field of a protein structure file (PDB or mmCIF), using the same scoring logic as the ChimeraX daqcolor plugin.
 
-### Requirements
+#### Requirements
+
 - Python 3.8+
 - NumPy
 - SciPy (optional, for fast kNN; NumPy fallback is used if unavailable)
 - gemmi (required for PDB/mmCIF I/O)
 
-### Install dependencies:
-```
+#### Install dependencies
+
+```bash
 pip install numpy scipy gemmi
 ```
 
-### Basic Usage
-```
+#### Basic Usage
+
+```bash
 python daq_write_bfactor.py \
     -i model.cif \
     -p points_AA_ATOM_SS_swap.npy \
@@ -501,8 +704,9 @@ This command:
 - Writes the scores to the B-factor field
 - Preserves the input file format (PDB or mmCIF)
 
-### Command-Line Options
-```
+#### Command-Line Options
+
+```text
 -i, --input        Input structure file (.pdb/.cif/.mmcif) [required]
 -o, --output       Output structure file (.pdb/.cif/.mmcif) [required]
 -p, --points       Points file (N×32 numpy file) [required]
@@ -520,26 +724,28 @@ This command:
 --nan-fill         Value written when score is NaN/inf (default: 0.0)
 ```
 
-### Scoring Metrics
-- aa_score	DAQ score for the native residue type
-- atom_score	DAQ score based on CA atom probability
-- aa_conf:XXX	DAQ confidence for a specific amino acid (e.g. aa_conf:ALA)
+#### Scoring Metrics
 
-### Window Averaging
+- `aa_score`: DAQ score for the native residue type
+- `atom_score`: DAQ score based on CA atom probability
+- `aa_conf:XXX`: DAQ confidence for a specific amino acid (e.g. `aa_conf:ALA`)
+
+#### Window Averaging
+
 By default, scores are smoothed using chain-aware window averaging:
 
-Residues within
-- residue_number ± half_window
-(default: ±9 residues) are averaged
+- Residues within `residue_number ± half_window` (default: ±9 residues) are averaged
 - Only residues in the same chain are considered
 - Non-finite values are ignored
 
-### Disable window averaging:
-```
+#### Disable window averaging
+
+```bash
 --no-window
 ```
 
 ---
+
 ## Notes
 
 - DAQ is included as a submodule to ensure consistency with published methods.
