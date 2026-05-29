@@ -704,6 +704,12 @@ daqscore compute_grid #1 0.5 backend tensorrt gpu_id 1
 
 The plugin auto-selects an inference batch size per backend (TRT 2048, CUDA 1024, DirectML/CPU 256). Override with `batch_size N` in the GUI or CLI, or set `DAQ_BATCH_OVERRIDE=<n>` to globally override for benchmarking.
 
+**Troubleshooting — `libnvinfer.so.10: cannot open shared object file`:**
+
+This means the TensorRT runtime libraries weren't fully installed with the bundle. **You don't need them for GPU acceleration:** with `backend auto` (the default) the plugin falls through to the **CUDA EP**, which is GPU-accelerated and ships its libraries as ordinary bundle dependencies. (Older versions silently dropped all the way to CPU — that bug is fixed; `auto` now reaches CUDA.)
+
+If a **forced** backend (e.g. `backend tensorrt`) can't initialize, the plugin raises a clear error instead of silently running on CPU — switch to `auto` or `cuda` to keep GPU acceleration. To restore the faster TensorRT path, reinstall the DAQplugin bundle so its NVIDIA dependencies are pulled in full.
+
 </details>
 
 ---
