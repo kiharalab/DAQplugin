@@ -15,7 +15,9 @@ Output:
 """
 
 import os
+import re
 import sys
+import glob
 import shutil
 import subprocess
 import argparse
@@ -23,51 +25,115 @@ from pathlib import Path
 
 
 def find_chimerax():
-    """Find ChimeraX executable."""
-    if sys.platform.startswith('linux'):
-        candidates = ['/usr/local/bin/chimerax', '/usr/bin/chimerax', shutil.which('chimerax')]
-    elif sys.platform == 'darwin':
-        candidates = ['/Applications/ChimeraX.app/Contents/bin/ChimeraX']
-    else:
-        candidates = []
+    """Find a ChimeraX executable across platforms and install layouts.
 
-    for c in candidates:
-        if c and os.path.exists(c):
-            return c
-    return shutil.which('chimerax')
+    Checks PATH first, then well-known locations, globbing so that
+    version-stamped installs (``ChimeraX-1.11.1.app``, ``/apps/chimerax/1.11``,
+    ``C:\\Program Files\\ChimeraX 1.11``) are matched — newest first. No
+    version or site path is hard-coded. Returns the path, or None.
+    """
+    # 1. On PATH (user launcher / `chimerax` symlink).
+    for name in ('ChimeraX', 'chimerax'):
+        found = shutil.which(name)
+        if found:
+            return found
+
+    # 2. Platform install locations (literal paths + globs).
+    if sys.platform == 'darwin':
+        patterns = ['/Applications/ChimeraX*.app/Contents/bin/ChimeraX']
+    elif sys.platform.startswith('linux'):
+        patterns = [
+            '/usr/local/bin/chimerax', '/usr/bin/chimerax',
+            '/opt/UCSF/ChimeraX*/bin/chimerax',
+            '/apps/chimerax/*/usr/bin/chimerax',
+        ]
+    elif sys.platform.startswith('win'):
+        patterns = [
+            r'C:\Program Files\ChimeraX*\bin\ChimeraX*.exe',
+            r'C:\Program Files\ChimeraX*\bin\chimerax*.exe',
+        ]
+    else:
+        patterns = []
+
+    for pat in patterns:
+        if glob.escape(pat) != pat:  # contains a wildcard
+            for m in sorted(glob.glob(pat), key=_cx_version_key, reverse=True):
+                if os.path.exists(m):
+                    return m
+        elif os.path.exists(pat):
+            return pat
+    return None
+
+
+def _looks_like_python(path):
+    """True if `path` is an executable named python / python3 / python3.X."""
+    base = os.path.basename(path)
+    ok_name = bool(re.match(r'^python(3(\.\d+)?)?$', base)) or base.lower() == 'python.exe'
+    return ok_name and os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def _cx_version_key(path):
+    """Sort key = the ChimeraX version embedded in a path (newest = largest).
+
+    Matches the version right after `chimerax/` or `ChimeraX-` so unrelated
+    numbers (python3.11, manylinux_2_28) don't skew ordering. A lexical sort
+    would wrongly rank 1.9 above 1.11; this returns (1,9,0) < (1,11,1).
+    """
+    m = re.search(r'chimerax[/\-](\d+)\.(\d+)(?:\.(\d+))?', path, re.IGNORECASE)
+    if not m:
+        return (0, 0, 0)
+    return tuple(int(x) if x else 0 for x in m.groups())
 
 
 def find_chimerax_python(chimerax_path):
-    """Find ChimeraX's bundled Python executable."""
-    if not chimerax_path or not os.path.exists(chimerax_path):
-        return None
+    """Find ChimeraX's bundled Python, derived from the executable location.
 
-    real_path = os.path.realpath(chimerax_path)
-    chimerax_dir = os.path.dirname(real_path)
+    Handles the macOS .app framework layout, the Linux ucsf-chimerax tree, and
+    Windows — without hard-coding a version or site path.
+    """
+    # 1. Derive from the executable's real location. Works for a real .app /
+    #    Linux install tree; fails for a thin launcher wrapper (e.g.
+    #    /usr/local/bin/ChimeraX -> /scratch/.../chimerax) that hides the tree.
+    if chimerax_path and os.path.exists(chimerax_path):
+        real = os.path.realpath(chimerax_path)
+        bindir = os.path.dirname(real)
+        patterns = []
+        if sys.platform == 'darwin':
+            # .../ChimeraX.app/Contents/bin/ChimeraX ->
+            #   .../Contents/Library/Frameworks/Python.framework/Versions/<v>/bin/python3*
+            contents = os.path.dirname(bindir)
+            patterns.append(os.path.join(
+                contents, 'Library', 'Frameworks', 'Python.framework',
+                'Versions', '*', 'bin', 'python3*'))
+        patterns += [
+            os.path.join(bindir, 'python3*'),
+            os.path.join(bindir, 'python.exe'),
+            os.path.join(os.path.dirname(bindir), 'lib', 'python3*', 'bin', 'python3*'),
+        ]
+        for pat in patterns:
+            for cand in sorted(glob.glob(pat), key=_cx_version_key, reverse=True):
+                if _looks_like_python(cand):
+                    return cand
 
-    candidates = [
-        os.path.join(chimerax_dir, 'python3.11'),
-        os.path.join(chimerax_dir, 'python3'),
-        os.path.join(chimerax_dir, 'python'),
-        os.path.join(os.path.dirname(chimerax_dir), 'lib', 'python3.11', 'bin', 'python3.11'),
-        '/apps/chimerax/1.10-noble/usr/lib/ucsf-chimerax/bin/python3.11',
-    ]
-
-    if 'chimerax' in real_path.lower():
-        parts = real_path.split(os.sep)
-        for i, part in enumerate(parts):
-            if 'chimerax' in part.lower():
-                base = os.sep.join(parts[:i+2])
-                candidates.extend([
-                    os.path.join(base, 'bin', 'python3.11'),
-                    os.path.join(base, 'bin', 'python3'),
-                    os.path.join(base, 'bin', 'python'),
-                ])
-
-    for candidate in candidates:
-        if candidate and os.path.exists(candidate):
-            return candidate
-
+    # 2. Fallback: scan standard ChimeraX install roots directly (newest
+    #    first), so a launcher wrapper that hides the tree still resolves.
+    if sys.platform == 'darwin':
+        roots = ['/Applications/ChimeraX*.app/Contents/Library/Frameworks/'
+                 'Python.framework/Versions/*/bin/python3*']
+    elif sys.platform.startswith('linux'):
+        roots = [
+            '/apps/chimerax/*/usr/lib/ucsf-chimerax/bin/python3*',
+            '/opt/UCSF/ChimeraX*/lib/python3*/bin/python3*',
+            '/usr/lib/ucsf-chimerax/bin/python3*',
+        ]
+    elif sys.platform.startswith('win'):
+        roots = [r'C:\Program Files\ChimeraX*\bin\python.exe']
+    else:
+        roots = []
+    for pat in roots:
+        for cand in sorted(glob.glob(pat), key=_cx_version_key, reverse=True):
+            if _looks_like_python(cand):
+                return cand
     return None
 
 

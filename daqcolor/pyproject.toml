@@ -8,7 +8,7 @@ build-backend = "chimerax.bundle_builder.cx_pep517"
 # When uploaded to the ChimeraX toolshed, the bundle
 # will be displayed without the ChimeraX- prefix.
 name = "ChimeraX-DAQplugin"
-version = "1.0.1"
+version = "1.0.2"
 license = "GPL-3.0-only"
 authors = [{name = "Genki Terashi", email = "gterashi@purdue.edu"}]
 description = "DAQ Score computation and visualization for cryo-EM models"
