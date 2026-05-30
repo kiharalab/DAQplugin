@@ -77,6 +77,41 @@ def _ep_for_backend(backend: str) -> str:
     }[backend]
 
 
+def _ep_fallback_hint(backend: str) -> str:
+    """Actionable remediation when a GPU EP silently fell back to CPU.
+
+    ORT does not raise when a GPU provider can't initialize — it logs an
+    "EP Error ... Falling back to ['CPUExecutionProvider']" and hands back a
+    CPU-only session. We turn that into a hard error (see DAQOnnxModel) and
+    attach this hint so the user can either fix the GPU stack or pick a
+    backend that works.
+    """
+    if backend == "tensorrt":
+        # libnvinfer.so.10 ships only as a bundle dependency (it isn't on
+        # plain PyPI). If it's absent the install didn't complete the NVIDIA
+        # runtime libs — the CUDA EP gives full GPU acceleration without them.
+        return (
+            "The TensorRT EP couldn't load its runtime libraries "
+            "(libnvinfer.so.10). The CUDA EP gives full GPU acceleration "
+            "without TensorRT — set Backend to 'Auto' (it falls through to "
+            "CUDA automatically) or 'CUDA'. If you need the faster TensorRT "
+            "path, reinstall the DAQplugin bundle so its NVIDIA dependencies "
+            "are pulled in full.")
+    if backend == "cuda":
+        return (
+            "The CUDA EP couldn't load the CUDA 12.x / cuDNN 9.x runtime "
+            "(libcublasLt.so.12, libcudnn.so.9, ...), or the NVIDIA driver is "
+            "too old for CUDA 12 (need >= 525; check `nvidia-smi`). These "
+            "libraries are bundle dependencies — reinstall the DAQplugin "
+            "bundle if they're missing. Otherwise set Backend to 'Auto' or "
+            "'CPU'.")
+    if backend == "directml":
+        return (
+            "The DirectML EP failed to initialize. Update your GPU driver, or "
+            "set Backend to 'Auto' or 'CPU'.")
+    return "Set Backend to 'Auto' or 'CPU'."
+
+
 def _is_oom_error(exc: BaseException) -> bool:
     """Detect CUDA/MLX/system OOM from exception text.
 
@@ -557,16 +592,26 @@ class DAQOnnxModel:
             providers=providers,
         )
         
-        # Log the actual provider being used (in case fallback occurred)
-        # and update self.provider so downstream code (auto-batch sizing,
-        # etc.) sees the EP that's actually running, not the one we asked
-        # for. ORT-TRT EP can silently fall back to CUDA EP if TensorRT
-        # libs aren't dlopenable at session create.
-        actual_provider = self.session.get_providers()[0]
-        if actual_provider != self.provider:
-            print(f"DAQ: Note: Actual execution provider is {actual_provider} "
-                  f"(requested {self.provider})")
-            self.provider = actual_provider
+        # Guard against ORT's silent GPU->CPU fallback. When a GPU EP can't
+        # initialize (missing TensorRT/CUDA libs, driver too old for the ORT
+        # CUDA major), InferenceSession does NOT raise: it logs "EP Error ...
+        # Falling back to ['CPUExecutionProvider']" and returns a CPU-only
+        # session. Left unchecked that runs a forced GPU backend on CPU at a
+        # ~100x slowdown, and stalls backend='auto' on the first GPU
+        # candidate (it "succeeds" as CPU, so the chain never reaches the
+        # next GPU EP). Detect full fallback by the requested EP's absence
+        # from the live provider list and raise, so load_model() advances the
+        # auto chain or surfaces a clear error for a forced backend.
+        actual = self.session.get_providers()
+        if ep not in actual:
+            raise RuntimeError(
+                f"Backend '{backend}' ({ep}) failed to initialize; ORT "
+                f"silently fell back to {actual}. {_ep_fallback_hint(backend)}")
+        # EP loaded. CPU may still be present as a per-op safety net (ORT
+        # routes ops without a GPU kernel to it) — that's fine. Reconcile
+        # self.provider with the EP actually placed first so downstream
+        # auto-batch sizing sees what's really running.
+        self.provider = actual[0]
 
         # Log the physical GPU we landed on (if any) and warn on weak combos.
         if self.provider in ("TensorrtExecutionProvider",
@@ -848,8 +893,12 @@ def load_model(model_path: Optional[str] = None, verbose: bool = False,
                 # Forced backend: propagate immediately. User asked for this
                 # specific path, no silent fallback.
                 raise
-            print(f"DAQ: backend '{cand}' unavailable ({type(exc).__name__}: "
-                  f"{exc}); trying next in chain")
+            # Keep the per-candidate note short; the multi-line remediation
+            # hint is only worth showing when a *forced* backend fails (it
+            # re-raises above). If the whole chain fails, the final raise
+            # below joins every candidate's full error.
+            print(f"DAQ: backend '{cand}' unavailable "
+                  f"({type(exc).__name__}); trying next in chain")
 
     # All chain entries failed — surface the last error with full context.
     detail = "; ".join(f"{c}: {type(e).__name__}: {e}" for c, e in errors)

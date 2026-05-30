@@ -979,8 +979,14 @@ def daqscore_compute_grid(session, map_input, contour, *, structure=None, output
         return str(saved_path)
         
     except Exception as e:
-        session.logger.error(f"DAQ score computation failed: {e}")
-        raise
+        # Surface as a UserError so ChimeraX shows a clean error message
+        # (e.g. the backend remediation hint when a forced GPU EP can't load)
+        # instead of a raw Python traceback / bug-report dialog. Local import
+        # keeps cmd.py importable under the test stubs (matches arrow.py).
+        from chimerax.core.errors import UserError
+        if isinstance(e, UserError):
+            raise
+        raise UserError(f"DAQ score computation failed: {e}") from e
 
 
 daqscore_compute_grid_desc = CmdDesc(
@@ -1151,8 +1157,12 @@ def daqscore_compute_pdb(session, map_input, *, structure=None, output=None,
         return str(saved_path)
 
     except Exception as e:
-        session.logger.error(f"DAQ score computation (PDB mode) failed: {e}")
-        raise
+        # See daqscore_compute_grid: present a clean UserError (carrying the
+        # backend remediation hint) rather than a raw traceback.
+        from chimerax.core.errors import UserError
+        if isinstance(e, UserError):
+            raise
+        raise UserError(f"DAQ score computation (PDB mode) failed: {e}") from e
 
 
 daqscore_compute_pdb_desc = CmdDesc(

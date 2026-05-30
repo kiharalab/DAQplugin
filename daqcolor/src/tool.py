@@ -1477,7 +1477,14 @@ class DAQTool(ToolInstance):
             cmd += f" output \"{outp}\""
 
         self.session.logger.info(f"Running: {cmd}")
-        run(self.session, cmd)
+        # Compute can now fail loudly (e.g. a forced GPU backend whose EP
+        # can't load raises UserError). The command already logged a clean
+        # message; keep the post-run UI updates strictly on the success path
+        # and don't let the exception escape this Qt slot.
+        try:
+            run(self.session, cmd)
+        except Exception:
+            return
         self.load_edit.setText(outp)
         self._capture_scores_from_structure_bfactors(self._selected_structure())
 
@@ -1518,7 +1525,12 @@ class DAQTool(ToolInstance):
         cmd += " apply_color true"
 
         self.session.logger.info(f"Running: {cmd}")
-        run(self.session, cmd)
+        # See _run_compute_grid: compute can raise (forced GPU EP unavailable);
+        # keep UI updates on the success path and contain the exception here.
+        try:
+            run(self.session, cmd)
+        except Exception:
+            return
         self._capture_scores_from_structure_bfactors(self._selected_structure())
         self.load_edit.setText(outp)
 

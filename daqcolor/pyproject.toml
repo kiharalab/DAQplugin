@@ -8,7 +8,7 @@ build-backend = "chimerax.bundle_builder.cx_pep517"
 # When uploaded to the ChimeraX toolshed, the bundle
 # will be displayed without the ChimeraX- prefix.
 name = "ChimeraX-DAQplugin"
-version = "1.0.1"
+version = "1.0.2"
 license = "GPL-3.0-only"
 authors = [{name = "Genki Terashi", email = "gterashi@purdue.edu"}]
 description = "DAQ Score computation and visualization for cryo-EM models"
@@ -38,10 +38,18 @@ dependencies = [
     "onnxruntime-gpu >=1.19.0; sys_platform == 'linux'",
     "onnxruntime-directml >=1.16.0; sys_platform == 'win32'",
     "onnxruntime >=1.16.0; sys_platform == 'darwin'",
-    # Linux NVIDIA stack: TensorRT EP gives ~356x speedup over CUDA EP on the
-    # 3D-Conv DAQ model. Pulled automatically; adds ~1.5 GB. Non-NVIDIA Linux
-    # users still get a working install (ORT falls back to CPU EP).
-    "tensorrt-cu12 >=10.0.0; sys_platform == 'linux'",
+    # Linux NVIDIA stack: TensorRT EP runs ~2.7x faster than the CUDA EP (and
+    # ~400x faster than CPU) on the 3D-Conv DAQ model. libnvinfer.so.10 is NOT
+    # available as a real wheel on plain PyPI — only an sdist stub is, whose
+    # nested install from https://pypi.nvidia.com is unreliable (build
+    # isolation / offline / Toolshed). So we pin the actual runtime-libs wheel
+    # from NVIDIA's index by direct URL (one per arch). The ORT TensorRT EP
+    # dlopens the .so only, so the Python `tensorrt`/`-bindings` package is not
+    # needed. Pinned to TRT 10.x: the EP loads libnvinfer.so.10 (a TRT 11 wheel
+    # ships libnvinfer.so.11 and won't load). If libnvinfer is ever missing,
+    # backend='auto' still gives GPU acceleration via the CUDA EP below.
+    "tensorrt-cu12-libs @ https://pypi.nvidia.com/tensorrt-cu12-libs/tensorrt_cu12_libs-10.16.1.11-py3-none-manylinux_2_28_x86_64.whl ; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "tensorrt-cu12-libs @ https://pypi.nvidia.com/tensorrt-cu12-libs/tensorrt_cu12_libs-10.13.0.35-py2.py3-none-manylinux_2_31_aarch64.whl ; sys_platform == 'linux' and platform_machine == 'aarch64'",
     "nvidia-cuda-runtime-cu12; sys_platform == 'linux'",
     "nvidia-cudnn-cu12 >=9.0.0; sys_platform == 'linux'",
     "nvidia-cublas-cu12; sys_platform == 'linux'",
