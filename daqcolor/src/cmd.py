@@ -894,7 +894,7 @@ from chimerax.map import MapArg
 def daqscore_compute_grid(session, map_input, contour, *, structure=None, output=None,
                              stride=2, batch_size=0, max_points=500000, ckpt=None,
                              metric="aa_score", k=1, colormap=None, half_window=9,
-                             monitor=False, gpu_id=0, backend="auto"):
+                             monitor=False, gpu_id=0, backend="auto", full_volume=False):
     """
     Compute DAQ scores from a cryo-EM map.
 
@@ -989,6 +989,7 @@ def daqscore_compute_grid(session, map_input, contour, *, structure=None, output
             model_path=ckpt,
             gpu_id=gpu_id,
             backend=backend,
+            full_volume=full_volume,
         )
 
         # Use the actual output path (may differ from requested if fallback was used)
@@ -1040,6 +1041,7 @@ daqscore_compute_grid_desc = CmdDesc(
         ("monitor", BoolArg),
         ("gpu_id", IntArg),
         ("backend", StringArg),
+        ("full_volume", BoolArg),
     ],
     synopsis="Compute DAQ scores from a cryo-EM map (file path or loaded volume #id)"
 )

@@ -28,7 +28,7 @@ from .constants import PLATFORM, detect_nvidia_gpus
 from .cmd import _MON, _compute_residue_scores
 
 
-_FALLBACK_VERSION = "1.0.5"
+_FALLBACK_VERSION = "1.0.9"
 
 
 def _daqplugin_version() -> str:
@@ -1483,6 +1483,13 @@ class DAQTool(ToolInstance):
         )
         self.grid_compute_button = btn_grid
         run_daq_layout.addWidget(btn_grid, 0, Qt.AlignLeft)
+        self.full_volume_check = QCheckBox("Whole volume", root)
+        self.full_volume_check.setChecked(False)
+        self.full_volume_check.setToolTip(
+            "Infer probabilities across the whole map, respecting Stride and Max Points. "
+            "Reference probabilities use only grid points with density >= Contour."
+        )
+        run_daq_layout.addWidget(self.full_volume_check)
         run_daq_layout.addStretch(1)
         main_layout.addWidget(run_daq_group)
 
@@ -2503,6 +2510,8 @@ class DAQTool(ToolInstance):
         contour = float(self.contour_spin.value())
 
         cmd = f"daqscore compute_grid {map_tok} {contour}"
+        if self.full_volume_check.isChecked():
+            cmd += " full_volume true"
 
         st_tok = self._structure_token_or_none()
         if st_tok is not None:

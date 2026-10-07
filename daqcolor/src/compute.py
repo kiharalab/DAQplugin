@@ -262,12 +262,12 @@ def extract_threshold_points(
     vol_data: np.ndarray,
     origin: Tuple[float, float, float],
     step: Tuple[float, float, float],
-    contour: float = 0.0,
+    contour: Optional[float] = 0.0,
     stride: int = 2,
     max_points: Optional[int] = 500000,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Extract grid points above contour threshold.
+    Extract grid points above contour threshold (None selects the whole volume).
 
     Parameters
     ----------
@@ -277,8 +277,8 @@ def extract_threshold_points(
         Volume origin (x, y, z) in Angstroms
     step : tuple
         Voxel size (x, y, z) in Angstroms
-    contour : float
-        Contour threshold value
+    contour : float or None
+        Contour threshold value; None disables density filtering
     stride : int
         Stride for point sampling (default: 2)
     max_points : int, optional
@@ -293,13 +293,13 @@ def extract_threshold_points(
     # Apply stride
     if stride > 1:
         vol_s = vol_data[::stride, ::stride, ::stride]
-        mask = vol_s >= contour
+        mask = np.ones(vol_s.shape, dtype=bool) if contour is None else vol_s >= contour
         idx_zyx = np.argwhere(mask)
         if idx_zyx.size == 0:
             return np.zeros((0, 3), dtype=np.float32), np.zeros((0,), dtype=np.float32)
         idx_zyx = idx_zyx * stride
     else:
-        mask = vol_data >= contour
+        mask = np.ones(vol_data.shape, dtype=bool) if contour is None else vol_data >= contour
         idx_zyx = np.argwhere(mask)
         if idx_zyx.size == 0:
             return np.zeros((0, 3), dtype=np.float32), np.zeros((0,), dtype=np.float32)
@@ -521,6 +521,7 @@ def compute_daq_scores(
     progress_callback: Optional[Callable] = None,
     gpu_id: int = 0,
     backend: str = "auto",
+    full_volume: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, Optional[Path], dict]:
     """
     Full DAQ score computation pipeline.
@@ -547,6 +548,9 @@ def compute_daq_scores(
         Progress callback function(current, total, message)
     gpu_id : int
         NVIDIA device id for tensorrt/cuda backends.
+    full_volume : bool
+        Infer across the whole volume, respecting stride/max_points. Reference
+        probabilities still use density >= contour (default: False).
     backend : str
         Inference backend: "auto" (platform chain), "tensorrt", "cuda",
         "directml", "mlx", "mlx-cpu", or "cpu". See onnx_model.load_model.
@@ -620,16 +624,28 @@ def compute_daq_scores(
     data_norm = normalize_volume(data)
     timings['2_volume_data'] = time.perf_counter() - t0
 
-    # Step 3: Extract points above contour * 0.5 (more points for better coverage)
-    # Reference distribution will be filtered by original contour later
-    extraction_contour = contour * 0.5
+    # Keep legacy sampling unchanged unless whole-volume inference is requested.
+    # Reference distribution always uses the original contour.
+    extraction_contour = None if full_volume else contour * 0.5
+    if full_volume and max_points is not None:
+        sampled_count = data[::stride, ::stride, ::stride].size if stride > 1 else data.size
+        if sampled_count > max_points:
+            session.logger.warning(
+                f"Whole volume contains {sampled_count:,} grid points after Stride sampling, "
+                f"exceeding Max Points ({max_points:,}). "
+                f"Only {max_points:,} randomly selected points will be evaluated. "
+                "Increase Max Points to evaluate all sampled grid points."
+            )
     update_progress(2, 6, "Extracting grid points...")
     t0 = time.perf_counter()
     points, density = extract_threshold_points(data, origin, step, contour=extraction_contour, stride=stride, max_points=max_points)
     timings['3_extract_points'] = time.perf_counter() - t0
 
     n_points = points.shape[0]
-    session.logger.info(f"Extracted {n_points} points above contour {extraction_contour} (extraction threshold)")
+    if full_volume:
+        session.logger.info(f"Extracted {n_points} points across the whole volume (stride/max_points apply)")
+    else:
+        session.logger.info(f"Extracted {n_points} points above contour {extraction_contour} (extraction threshold)")
     session.logger.info(f"Reference will use points with density >= {contour} (original contour)")
 
     if n_points == 0:
@@ -638,6 +654,10 @@ def compute_daq_scores(
         return (np.zeros((0, 3), dtype=np.float32),
                 np.zeros((0, 32), dtype=np.float32),
                 None, timings)
+
+    if full_volume and not np.any(density >= contour):
+        raise ValueError("No sampled grid points have density >= Contour for reference probabilities. "
+                         "Lower Contour or adjust Stride/Max Points.")
 
     # Step 4: Extract patches
     update_progress(3, 6, f"Extracting {n_points} patches...")
