@@ -9,15 +9,17 @@ except Exception:  # pragma: no cover - older bundled Python fallback
 from chimerax.core.tools import ToolInstance
 from chimerax.ui import MainToolWindow
 from chimerax.core.commands import run
+from chimerax.core.selection import SELECTION_CHANGED
+from chimerax.atomic import selected_residues
 
 from Qt.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QDoubleSpinBox,
     QSpinBox, QPushButton, QCheckBox, QGroupBox, QFileDialog, QComboBox,
     QToolButton, QFrame, QSizePolicy, QMessageBox, QGridLayout, QTabWidget,
-    QTableView, QAbstractItemView, QHeaderView, QStyle, QToolTip
+    QTableView, QAbstractItemView, QHeaderView, QStyle, QToolTip, QProgressBar
 )
 
-from Qt.QtCore import Qt, QAbstractTableModel
+from Qt.QtCore import Qt, QAbstractTableModel, QItemSelection, QItemSelectionModel, QCoreApplication, QEventLoop
 
 from Qt.QtGui import QColor, QDesktopServices, QFontMetrics, QGuiApplication, QPainter, QPainterPath, QPen
 from Qt.QtCore import QUrl, QTimer
@@ -28,7 +30,7 @@ from .constants import PLATFORM, detect_nvidia_gpus
 from .cmd import _MON, _compute_residue_scores
 
 
-_FALLBACK_VERSION = "1.0.9"
+_FALLBACK_VERSION = "1.0.11"
 
 
 def _daqplugin_version() -> str:
@@ -547,6 +549,7 @@ class DAQTool(ToolInstance):
     def __init__(self, session, tool_name):
         super().__init__(session, tool_name)
         self.display_name = "DAQplugin"
+        self._compute_running = False
         self._residue_table_cache = None
         self._computed_grid_npy_path = None
         self._plot_selected_residue_specs = []
@@ -559,6 +562,8 @@ class DAQTool(ToolInstance):
         # Set up auto-refresh handlers for model changes
         self._model_add_handler = session.triggers.add_handler('add models', self._on_models_changed)
         self._model_remove_handler = session.triggers.add_handler('remove models', self._on_models_changed)
+        self._selection_handler = session.triggers.add_handler(
+            SELECTION_CHANGED, self._sync_table_selection)
         
         self.tool_window.manage(None)
 
@@ -570,6 +575,8 @@ class DAQTool(ToolInstance):
             self.session.triggers.remove_handler(self._model_add_handler)
         if hasattr(self, '_model_remove_handler'):
             self.session.triggers.remove_handler(self._model_remove_handler)
+        if hasattr(self, '_selection_handler'):
+            self.session.triggers.remove_handler(self._selection_handler)
         super().delete()
 
     def _on_models_changed(self, trigger_name, data):
@@ -1492,6 +1499,15 @@ class DAQTool(ToolInstance):
         run_daq_layout.addWidget(self.full_volume_check)
         run_daq_layout.addStretch(1)
         main_layout.addWidget(run_daq_group)
+        self.compute_progress = QProgressBar(root)
+        self.compute_progress.setRange(0, 100)
+        self.compute_progress.setValue(0)
+        self.compute_progress.setVisible(False)
+        self.compute_status = QLabel("", root)
+        self.compute_status.setWordWrap(True)
+        self.compute_status.setVisible(False)
+        main_layout.addWidget(self.compute_progress)
+        main_layout.addWidget(self.compute_status)
 
         metric_box, metric_layout, metric_label = make_field_box("Metric", card="dark")
         metric_box.setToolTip("Scoring metric: amino-acid, C-alpha atom, or secondary-structure DAQ score")
@@ -1600,6 +1616,7 @@ class DAQTool(ToolInstance):
             variant="primary",
             min_width=250,
         )
+        self.pdb_compute_button = btn_pdb
         atom_layout.addWidget(btn_pdb, 0, Qt.AlignLeft)
         atom_layout.addStretch(1)
         main_layout.addWidget(atom_group)
@@ -2257,6 +2274,31 @@ class DAQTool(ToolInstance):
         self._store_residue_table_cache(score_data["residues"], score_data["scores"], source="computed")
         return self._residue_table_cache, None
 
+    def _sync_table_selection(self, trigger_name=None, data=None):
+        """Reflect the 3D selection without issuing commands or moving the camera."""
+        structure = self._selected_structure()
+        specs = {
+            self._residue_spec(structure, residue)
+            for residue in selected_residues(self.session)
+            if structure is not None and residue.structure is structure
+        }
+        model = self.residue_table_model
+        selection = QItemSelection()
+        first = None
+        for row in range(model.rowCount()):
+            index = model.index(row, 0)
+            if index.data(Qt.UserRole + 1) in specs:
+                selection.select(index, model.index(row, model.columnCount() - 1))
+                if first is None:
+                    first = index
+        selection_model = self.residue_table.selectionModel()
+        selection_model.select(selection, QItemSelectionModel.ClearAndSelect)
+        selection_model.setCurrentIndex(
+            first if first is not None else model.index(-1, -1),
+            QItemSelectionModel.NoUpdate)
+        if first is not None:
+            self.residue_table.scrollTo(first, QAbstractItemView.EnsureVisible)
+
     def _focus_clicked_residue(self, index):
         structure = self._selected_structure()
         if structure is None:
@@ -2301,6 +2343,7 @@ class DAQTool(ToolInstance):
         sort_section = self.residue_table.horizontalHeader().sortIndicatorSection()
         sort_order = self.residue_table.horizontalHeader().sortIndicatorOrder()
         self.residue_table.sortByColumn(sort_section, sort_order)
+        self._sync_table_selection()
         if self.tabs.currentIndex() == getattr(self, "_plot_tab_index", -1):
             self._update_residue_plot_from_cache(cache)
 
@@ -2493,7 +2536,57 @@ class DAQTool(ToolInstance):
             self.session.logger.error(f"Failed to clear selection: {e}")
 
     # ---------------- Command runners ----------------
+    def _update_compute_progress(self, current, total, message=""):
+        # Reserve the final percent for command postprocessing (e.g. coloring).
+        percent = min(99, max(0, int(99 * current / total))) if total else 0
+        self.compute_progress.setValue(percent)
+        self.compute_status.setText(
+            "Finalizing DAQ scores..." if current >= total and total else message)
+        self._active_compute_button.setText(f"Calculating DAQ... [{percent}%]")
+        # repaint() alone does not flush native window updates on macOS.
+        # Pump pending GUI events at batch boundaries, excluding user input
+        # and socket events. The computation guard also prevents reentry.
+        QCoreApplication.processEvents(
+            QEventLoop.ExcludeUserInputEvents | QEventLoop.ExcludeSocketNotifiers)
+        for widget in (self.compute_progress, self.compute_status, self._active_compute_button):
+            widget.repaint()
+
+    def _run_compute_with_feedback(self, command, button):
+        if self._compute_running:
+            return False
+        self._compute_running = True
+        self._active_compute_button = button
+        buttons = (self.grid_compute_button, self.pdb_compute_button)
+        original = [(b, b.text(), b.isEnabled()) for b in buttons]
+        previous_callback = getattr(self.session, '_daq_progress_callback', None)
+        try:
+            for b in buttons:
+                b.setEnabled(False)
+            self.compute_progress.setVisible(True)
+            self.compute_status.setVisible(True)
+            self.session._daq_progress_callback = self._update_compute_progress
+            self._update_compute_progress(0, 1, "Preparing DAQ computation...")
+            run(self.session, command)
+            self.compute_progress.setValue(100)
+            self.compute_status.setText("DAQ computation completed.")
+            return True
+        except Exception:
+            self.compute_status.setText("DAQ computation failed. See Log for details.")
+            return False
+        finally:
+            if previous_callback is None:
+                delattr(self.session, '_daq_progress_callback')
+            else:
+                self.session._daq_progress_callback = previous_callback
+            for b, text, enabled in original:
+                b.setText(text)
+                b.setEnabled(enabled)
+            self._compute_running = False
+            self._active_compute_button = None
+
     def _run_compute_grid(self):
+        if self._compute_running:
+            return
         if not self._require_map_and_npy("compute_grid"):
             return
         map_tok = self._map_input_token()
@@ -2542,9 +2635,7 @@ class DAQTool(ToolInstance):
         # can't load raises UserError). The command already logged a clean
         # message; keep the post-run UI updates strictly on the success path
         # and don't let the exception escape this Qt slot.
-        try:
-            run(self.session, cmd)
-        except Exception:
+        if not self._run_compute_with_feedback(cmd, self.grid_compute_button):
             return
         self._computed_grid_npy_path = outp
         self.load_edit.setText(outp)
@@ -2552,6 +2643,8 @@ class DAQTool(ToolInstance):
         self._sync_next_action_buttons()
 
     def _run_compute_pdb(self):
+        if self._compute_running:
+            return
         if not self._require_map_and_npy("compute_pdb"):
             return
         
@@ -2590,9 +2683,7 @@ class DAQTool(ToolInstance):
         self.session.logger.info(f"Running: {cmd}")
         # See _run_compute_grid: compute can raise (forced GPU EP unavailable);
         # keep UI updates on the success path and contain the exception here.
-        try:
-            run(self.session, cmd)
-        except Exception:
+        if not self._run_compute_with_feedback(cmd, self.pdb_compute_button):
             return
         self.load_edit.setText(outp)
         self._capture_scores_from_structure_bfactors(self._selected_structure())

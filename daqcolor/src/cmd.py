@@ -989,6 +989,7 @@ def daqscore_compute_grid(session, map_input, contour, *, structure=None, output
             model_path=ckpt,
             gpu_id=gpu_id,
             backend=backend,
+            progress_callback=getattr(session, '_daq_progress_callback', None),
             full_volume=full_volume,
         )
 
@@ -1150,6 +1151,7 @@ def daqscore_compute_pdb(session, map_input, *, structure=None, output=None,
             model_path=ckpt,
             gpu_id=gpu_id,
             backend=backend,
+            progress_callback=getattr(session, '_daq_progress_callback', None),
         )
 
         # Use the actual output path (may differ from requested if fallback was used)

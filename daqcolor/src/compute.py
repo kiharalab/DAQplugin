@@ -676,7 +676,8 @@ def compute_daq_scores(
     session.logger.info(f"Running inference on {n_points} patches...")
 
     def inference_progress(current, total):
-        update_progress(4, 6, f"Inference: {current}/{total} patches")
+        update_progress(4 + (current / total if total else 0), 6,
+                        f"Running CNN inference: {current}/{total} patches")
 
     t0 = time.perf_counter()
     aa_probs, atom_probs, ss_probs = model.predict_batched(patches, batch_size=batch_size, progress_callback=inference_progress)
@@ -931,7 +932,8 @@ def compute_daq_scores_pdb(
     session.logger.info(f"Running inference on {n_points} patches...")
 
     def inference_progress(current, total):
-        update_progress(4, 6, f"Inference: {current}/{total} patches")
+        update_progress(4 + (current / total if total else 0), 6,
+                        f"Running CNN inference: {current}/{total} patches")
 
     t0 = time.perf_counter()
     aa_probs, atom_probs, ss_probs = model.predict_batched(patches, batch_size=batch_size, progress_callback=inference_progress)
